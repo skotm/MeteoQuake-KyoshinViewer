@@ -1,63 +1,9 @@
-# MeteoQuake 
-
-地震・津波情報、気象情報を閲覧することができます。
-
-アプリ内のタブごとに、以下の情報を確認することができます。
-
-### **地震情報**
-  <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/c5297fdd-1c50-4b18-bb80-b0be32356a59" />
-
-  <div>P2P地震情報APIから取得した地震情報を表示します。その他、気象庁の震度データベースから取得した地震情報や、地震の推計震度分布を表示することができます。
-
-### **津波情報**
-  <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/dfae9d01-cbda-47ea-bb8a-07f27493bce4" />
-
-
-
-  <div>地震等に伴い気象庁から発表される 大津波警報, 津波警報, 津波注意報, 津波予報 のデータを表示します。その他、津波を引き起こした地震や観測された津波の最大波(参考値)を確認することができます。
-  
-### **気象情報**
-<img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/a72b394a-9a74-494d-9e2f-5ce3b92d347a" />
-
-  気象庁が発表する台風情報や雨雲レーダー、1/3/24時間降水量、天気分布、気温分布を地図で確認することができます。また、気象庁が発表する現在地や登録地点の天気予報や地域時系列予報、3/7日間天気予報を表示します。
-  
-### **警報等防災情報**
-<img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/85d13bd7-9e4d-4bc4-bd0d-e8c3cb5324be" />
-
-  気象庁が発表する警報、注意報等の情報を地図上に表示します。また、土砂キキクルや浸水キキクルの過去、現在の状況を確認することができます。
-
-## 利用方法・インストール方法
-
-Webアプリケーションのため、[ウェブサイト](https://skotm.github.io/MeteoQuake/) へアクセスするだけで利用できます。
-
-また、PWAに対応しているため、ネイティブアプリのようにデバイスへインストールすることができます。  
-(全ての端末・ブラウザで使用できるとは限りません)
-
-- デスクトップChromeの場合  
-  **アドレスバーのインストールボタン または メニュー → 保存と共有 → インストール**
-
-- iOSの場合  
-  **共有 → ホーム画面に追加**
-
-- Androidの場合  
-  **インストールバナー または メニュー → ホーム画面に追加**
-
-## 利用規約・注意事項について
-
-[利用規約 - Term of use](https://github.com/skotm/MeteoQuake/blob/main/public/terms-of-use.md)
-
-[プライバシーポリシー - privacy policy](https://github.com/skotm/MeteoQuake/blob/main/public/privacy-policy.md)
-
-[注意事項 - notice](https://github.com/skotm/MeteoQuake/blob/main/public/notices.md)
-
-を必ずご確認の上ご利用ください。
+# MeteoQuake-KyoshinViewer
+現在開発中...
 
 ### 参考にしたプログラム
 
 本プログラムのUIデザインは、[EQMonitor](https://github.com/YumNumm/EQMonitor)（[YumNumm](https://github.com/YumNumm)氏）のデザインを参考にさせていただきました。
-
-津波タブの機能は
-[scratch-realtime-earthquake-viewer-page](https://github.com/kotoho7/scratch-realtime-earthquake-viewer-page)([kotoho7](https://github.com/kotoho7)氏)を参考にさせていただきました。
 
 ### 参考にした記事
 [震度データベースの地震一覧を取得する](https://qiita.com/Ichihai1415/items/a2af335ad68224b1280f)
