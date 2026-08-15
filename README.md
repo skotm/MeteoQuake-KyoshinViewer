@@ -30,6 +30,5 @@
 #### 参考にした記事
 - [Ichihai1415](https://github.com/Ichihai1415)氏: [震度データベースの地震一覧を取得する](https://qiita.com/Ichihai1415/items/a2af335ad68224b1280f)
 - [JQuake](https://jquake.net/)氏 : [多項式補間を使用して強震モニタ画像から数値データを決定する](https://qiita.com/NoneType1/items/a4d2cf932e20b56ca444)
-
-[推計震度分布のGeoJSON化](https://qiita.com/soshi1822/items/59cac82f83b032653206)
+- [soshi1822](https://github.com/soshi1822)氏 : [推計震度分布のGeoJSON化](https://qiita.com/soshi1822/items/59cac82f83b032653206)
 
