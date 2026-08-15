@@ -17,6 +17,8 @@
 #### 参考にしたプログラム
 
 - 本プログラムのUIデザインは、[EQMonitor](https://github.com/YumNumm/EQMonitor)（[YumNumm](https://github.com/YumNumm)氏）のデザインを参考にさせていただきました。
+- 津波タブの機能は
+[scratch-realtime-earthquake-viewer-page](https://github.com/kotoho7/scratch-realtime-earthquake-viewer-page)([kotoho7](https://github.com/kotoho7)氏)を参考にさせていただきました。
 - 本プログラムのS-netのリアルタイム震度の取得方法については、
   - [umishiru-snet-shindo](https://github.com/t0729/umishiru-snet-shindo) 
 ([t0729](https://github.com/t0729)氏)
