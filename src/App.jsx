@@ -1,5 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
+import { useRealtimeStream } from "./src/useRealtimeStream";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -10,7 +11,7 @@ import { createPortal } from "react-dom";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.0.2";
+const APP_VERSION = "0.0.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -197,6 +198,7 @@ const LAYERS = [
 ];
 
 const NAV = [
+  { id: "realtime", label: "リアルタイム", path: null },
   { id: "quake",    label: "地震",   path: null },
   { id: "tsunami",  label: "津波",   path: null },
   { id: "settings", label: "設定",   path: null },
@@ -990,6 +992,9 @@ function MapCanvas({
   eewEpicenterPickActive = false, onPickEewEpicenter,
   quakeEpicenterPickActive = false, onPickQuakeEpicenter,
   eewDetailOpen = false,
+  showRealtimeMapLayers = false,
+  realtimeStations = [],
+  realtimeValues = EMPTY_REALTIME_VALUES,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -1008,6 +1013,12 @@ function MapCanvas({
   // { x, y, title, text } | null。x,yは地図コンテナ基準のスクリーン座標
   // (MapLibreのe.pointがそのままその座標系なので、変換不要で使える)。
   const [epicenterTooltip, setEpicenterTooltip] = useState(null);
+
+  // リアルタイムタブで観測点をタップした時に選択される観測点(id/name/intensity等)。
+  // BottomDock側の詳細カード表示に使う。onSelectEpicenterPoint等とは異なり、
+  // 現状は親コンポーネントに伝える必要が無いため、ここではpropではなく
+  // ローカルstateとして持たせている(必要になれば後でprop化する)。
+  const [selectedRealtimePoint, setSelectedRealtimePoint] = useState(null);
 
   // 地図に塗られている緊急地震速報の予想震度のうち、最も低いものと最も高いもの。
   // {minKey, maxKey} | null(何も塗られていない時)。右上の凡例表示に使う。
@@ -1512,7 +1523,51 @@ function MapCanvas({
             map.getCanvas().style.cursor = "";
           });
 
-          // 震央分布の丸のタップ選択・ホバー/タッチ時のツールチップ表示。
+          // リアルタイムタブ(強震モニタ/S-net)専用の観測点レイヤー。
+          // 数千点を毎秒更新する想定のため、station-points-symbolのような
+          // スプライトアイコン方式(震度キー別に画像を切り替える方式)ではなく、
+          // circleレイヤー+"dotColor"(JS側で計算済みの色文字列)を使う。
+          // tide-station-points-layerと同じ「色は事前計算してプロパティに
+          // 入れる」方式を踏襲している(MapLibre側のinterpolate式に0.01刻みの
+          // 連続値を渡すよりシンプルで、カラーマップの実装をクライアント/サーバーで
+          // 共通化しやすいため)。
+          map.addSource("realtime-points", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "realtime-points-layer",
+            type: "circle",
+            source: "realtime-points",
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": [
+                "interpolate", ["linear"], ["zoom"],
+                4, 2.5,
+                7, 4,
+                10, 6,
+                14, 9,
+              ],
+              // データなし観測点は薄いグレーの点として表示し、震度が
+              // 入っている観測点と区別できるようにする(dotColorが
+              // 未設定の場合のフォールバック)。
+              "circle-color": ["coalesce", ["get", "dotColor"], "rgba(128,128,128,0.4)"],
+              "circle-stroke-width": ["case", ["get", "hasData"], 0.5, 0],
+              "circle-stroke-color": "rgba(255,255,255,0.6)",
+            },
+          });
+          map.on("mouseenter", "realtime-points-layer", () => {
+            map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", "realtime-points-layer", () => {
+            map.getCanvas().style.cursor = "";
+          });
+          map.on("click", "realtime-points-layer", (e) => {
+            if (!e.features || !e.features.length) return;
+            setSelectedRealtimePoint(e.features[0].properties);
+          });
+
+
           map.on("mouseenter", "epicenter-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
           });
@@ -1704,6 +1759,53 @@ function MapCanvas({
     stationSource.setData({ type: "FeatureCollection", features: stationFeatures });
     areaSource.setData({ type: "FeatureCollection", features: areaFeatures });
   }, [stationPoints, status, stationMarkersVisible]);
+
+  // リアルタイムタブ(強震モニタ/S-net)の表示/非表示切り替え。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+    if (!map.getLayer("realtime-points-layer")) return;
+    map.setLayoutProperty(
+      "realtime-points-layer",
+      "visibility",
+      showRealtimeMapLayers ? "visible" : "none"
+    );
+  }, [showRealtimeMapLayers, status]);
+
+  // リアルタイムタブのデータをGeoJSONに変換して地図へ反映する。
+  // 呼び出し元(App)のuseRealtimeStreamが内部で最大2Hz(500ms間隔)に間引いて
+  // いるので、ここでの再計算頻度もそれに揃う。表示中(showRealtimeMapLayers)で
+  // ない間はApp側でWS接続自体をenabled=falseで切るため、この効果も自然に止まる。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready" || !showRealtimeMapLayers) return;
+    const source = map.getSource("realtime-points");
+    if (!source) return;
+
+    const scheme = colorSchemeRef.current?.colors ?? QUAKE_COLOR_SCHEMES.jma.colors;
+
+    const features = realtimeStations.map((s) => {
+      const value = realtimeValues.get(s.id);
+      const hasData = value !== undefined;
+      const key = hasData ? intensityValueToKey(value) : "?";
+      const dotColor = scheme[key]?.bg ?? scheme["?"]?.bg ?? "rgba(128,128,128,0.4)";
+      return {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+        properties: {
+          id: s.id,
+          source: s.source,
+          name: s.name,
+          stationCode: s.station_code,
+          intensity: hasData ? value : null,
+          hasData,
+          dotColor,
+        },
+      };
+    });
+
+    source.setData({ type: "FeatureCollection", features });
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -3040,6 +3142,31 @@ const BOUNDARY_LINE_COLORS = {
   green:  { label: "グリーン", color: "#34c759" },
   purple: { label: "パープル", color: "#af52de" },
 };
+
+// リアルタイムタブ(強震モニタ/S-net)配信サーバーのベースURL。
+// 実際にデプロイしたCloudflare Workersのドメインに置き換えること。
+const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.example.workers.dev";
+
+// MapCanvasのrealtimeValuesデフォルト引数用。`= new Map()`を直接デフォルト値に
+// 書くと毎レンダーで新しい参照が作られ、依存配列比較で無駄な再計算を招くため、
+// モジュールスコープで1つだけ用意して使い回す。
+const EMPTY_REALTIME_VALUES = new Map();
+
+// 計測震度(連続値)を、このアプリの震度階級キー("0"〜"7", 5-/5+/6-/6+)に変換する。
+// 気象庁の計測震度→震度階級の標準的な換算表に基づく。
+function intensityValueToKey(value) {
+  if (value == null || Number.isNaN(value)) return "?";
+  if (value < 0.5) return "0";
+  if (value < 1.5) return "1";
+  if (value < 2.5) return "2";
+  if (value < 3.5) return "3";
+  if (value < 4.5) return "4";
+  if (value < 5.0) return "5-";
+  if (value < 5.5) return "5+";
+  if (value < 6.0) return "6-";
+  if (value < 6.5) return "6+";
+  return "7";
+}
 
 const QUAKE_COLOR_SCHEMES = {
   // 過去のLeaflet版(getIntensityColor)と全く同じ、鮮やかなApple風パレット。
@@ -6991,6 +7118,12 @@ function Toggle({ on, onChange, disabled = false }) {
    NAV ICONS
    ───────────────────────────────────────────────────── */
 const NAV_ICONS = {
+  realtime: (
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none"
+         stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="2,12 7,12 9,5 13,19 15,12 22,12"/>
+    </svg>
+  ),
   quake: (
     <svg viewBox="0 0 24 24" width="26" height="26" fill="none"
          stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -13200,6 +13333,10 @@ export default function App() {
   const activeNavRef = useRef(activeNav);
   useEffect(() => { activeNavRef.current = activeNav; }, [activeNav]);
 
+  // リアルタイムタブ(強震モニタ/S-net)がアクティブな間だけWS接続を張る。
+  // 他タブ表示中は enabled=false になり、フック内部で自動的に切断される。
+  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, activeNav === "realtime");
+
   // タブバーで、既にアクティブなタブをもう一度タップした時に、フローティングを
   // 開閉トグルさせるための信号。値そのものに意味は無く、変化すること自体を
   // BottomDock側のuseEffectで検知してsnapIndexを切り替える。
@@ -14460,6 +14597,9 @@ export default function App() {
   // 津波予報区の色分けは、津波タブ・設定タブを見ている間に出す。
   // 実際にどの回の予報区を塗るかはtsunamiForMapDisplay(下)が決める。
   const showTsunamiMapLayers = !eewDetailOpen && (activeNav === "tsunami" || activeNav === "settings");
+
+  // リアルタイムタブ(強震モニタ/S-net)専用。他タブとは重ねずに単独表示する。
+  const showRealtimeMapLayers = !eewDetailOpen && activeNav === "realtime";
   const selectedFromRecent = effectiveTsunamis.find(t => t.id === selectedTsunamiId) || null;
   const selectedFromHistory = !selectedFromRecent
     ? (tsunamiHistory.items.find(t => t.id === selectedTsunamiId) || null)
@@ -15081,6 +15221,9 @@ export default function App() {
           quakeEpicenterPickActive={quakeEpicenterPickActive}
           onPickQuakeEpicenter={handlePickQuakeEpicenter}
           eewDetailOpen={eewDetailOpen}
+          showRealtimeMapLayers={showRealtimeMapLayers}
+          realtimeStations={realtimeStream.stations}
+          realtimeValues={realtimeStream.values}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
