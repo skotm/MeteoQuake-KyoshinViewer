@@ -3,21 +3,21 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  base: '/MeteoQuake/',
+  base: '/MeteoQuake-KyoshinViewer/',
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: '地震気象防災アプリ',
-        short_name: 'MeteoQuake', // お好みの名前に変更してください
-        description: '地震・気象・防災情報アプリ',
+        name: 'リアルタイム地震ビュアー',
+        short_name: 'MeteoQuake-KyoshinViewer', // お好みの名前に変更してください
+        description: '地震・防災情報アプリ',
         theme_color: '#0B0B0C',
         background_color: '#0B0B0C',
         display: 'standalone',
-        start_url: '/MeteoQuake/',
-        scope: '/MeteoQuake/',
+        start_url: '/MeteoQuake-KyoshinViewer/',
+        scope: '/MeteoQuake-KyoshinViewer/',
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
