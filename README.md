@@ -5,6 +5,8 @@
 ### 出典
 - [海しる 強震動情報レイヤー](https://www.msil.go.jp/msil/htm/main.html)
 - [気象庁 震度データベース](https://www.data.jma.go.jp/svd/eqdb/data/shindo/index.html)
+- [P2P地震情報 API](https://www.p2pquake.net/develop/json_api_v2/)
+- [Wolfx Open API](https://wolfx.jp/docs/open-api)
 #### 日本地図
 - [気象庁 予報区等GISデータ](https://www.data.jma.go.jp/developer/gis.html)
 #### 世界地図
