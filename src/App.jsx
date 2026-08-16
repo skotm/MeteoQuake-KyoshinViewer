@@ -3170,7 +3170,7 @@ function saveRealtimeApiToken(token) {
   }
 }
 
-const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.example.workers.dev";
+const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.skotm.workers.dev";
 
 // MapCanvasのrealtimeValuesデフォルト引数用。`= new Map()`を直接デフォルト値に
 // 書くと毎レンダーで新しい参照が作られ、依存配列比較で無駄な再計算を招くため、
