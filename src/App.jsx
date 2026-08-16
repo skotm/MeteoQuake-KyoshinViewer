@@ -3145,6 +3145,31 @@ const BOUNDARY_LINE_COLORS = {
 
 // リアルタイムタブ(強震モニタ/S-net)配信サーバーのベースURL。
 // 実際にデプロイしたCloudflare Workersのドメインに置き換えること。
+/* ─────────────────────────────────────────────────────
+   リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン。
+   Collector側は簡易フィルタとしてトークン検証を行っている(本格的な
+   認証ではない)。ユーザーが設定タブ「詳細設定」から入力し、
+   localStorageに保存する。デフォルトは空文字(未設定)。
+   ───────────────────────────────────────────────────── */
+const REALTIME_API_TOKEN_STORAGE_KEY = "realtimeApiToken";
+
+function loadStoredRealtimeApiToken() {
+  try {
+    return localStorage.getItem(REALTIME_API_TOKEN_STORAGE_KEY) ?? "";
+  } catch (err) {
+    console.warn("リアルタイムAPIトークンの設定を読み込めませんでした:", err);
+    return "";
+  }
+}
+
+function saveRealtimeApiToken(token) {
+  try {
+    localStorage.setItem(REALTIME_API_TOKEN_STORAGE_KEY, token);
+  } catch (err) {
+    console.warn("リアルタイムAPIトークンの設定を保存できませんでした:", err);
+  }
+}
+
 const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.example.workers.dev";
 
 // MapCanvasのrealtimeValuesデフォルト引数用。`= new Map()`を直接デフォルト値に
@@ -7519,6 +7544,7 @@ function BottomDock({
   quakeFetchLimit, onChangeQuakeFetchLimit,
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
+  realtimeApiToken, onChangeRealtimeApiToken,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -9012,6 +9038,8 @@ function BottomDock({
                   onChangeStationListDisplayMode={onChangeStationListDisplayMode}
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={onChangeExperimentalFeaturesEnabled}
+                  realtimeApiToken={realtimeApiToken}
+                  onChangeRealtimeApiToken={onChangeRealtimeApiToken}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={onBroadcastTestTsunami}
                   onCancelTestTsunami={onCancelTestTsunami}
@@ -11483,6 +11511,7 @@ const TAB_SETTINGS_CATEGORIES = [
 const SETTINGS_ITEMS = {
   advanced: [
     { id: "appearance", label: "外観" },
+    { id: "realtimeApi", label: "リアルタイムAPI" },
     { id: "experimental", label: "実験的・テスト機能" },
     { id: "logs", label: "ログ" },
   ],
@@ -12854,6 +12883,7 @@ function SettingsBody({
   quakeFetchLimit, onChangeQuakeFetchLimit,
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
+  realtimeApiToken, onChangeRealtimeApiToken,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -13048,6 +13078,48 @@ function SettingsBody({
           <SettingsMenuRow label="各地の震度の表示方法" onClick={() => onNavigate([...path, "stationListDisplay"])}/>
           <SettingsCardDivider/>
           <SettingsMenuRow label="取得件数" onClick={() => onNavigate([...path, "fetchLimit"])}/>
+        </SettingsCard>
+      </>
+    );
+  }
+
+  // リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン設定。
+  // 「外観」と同じ実装パターン(SettingsCard内にコントロールを1つ置く形)。
+  if (category === "advanced" && leaf === "realtimeApi") {
+    return (
+      <>
+        <SettingsHeader title="リアルタイムAPI"/>
+        <SettingsCard>
+          <div style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: `rgba(${tokens.ink},0.85)`, marginBottom: 6 }}>
+              アクセストークン
+            </div>
+            <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.55)`, marginBottom: 10, lineHeight: 1.5 }}>
+              強震モニタ・S-netのリアルタイム震度配信サーバーへの接続に使うトークンです。
+              このアプリは公開配信されるため、ここに入力したトークンは秘匿情報として扱われません(無差別アクセスを防ぐための簡易フィルタです)。
+            </div>
+            <input
+              type="text"
+              value={realtimeApiToken}
+              onChange={(e) => onChangeRealtimeApiToken(e.target.value)}
+              placeholder="トークンを入力"
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "10px 12px",
+                fontSize: 14,
+                borderRadius: 10,
+                border: `1px solid rgba(${tokens.ink},0.15)`,
+                background: `rgba(${tokens.ink},0.04)`,
+                color: `rgba(${tokens.ink},0.9)`,
+                outline: "none",
+              }}
+            />
+          </div>
         </SettingsCard>
       </>
     );
@@ -13333,9 +13405,17 @@ export default function App() {
   const activeNavRef = useRef(activeNav);
   useEffect(() => { activeNavRef.current = activeNav; }, [activeNav]);
 
+  // リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン。
+  // 設定タブ「詳細設定」から入力・変更できる。
+  const [realtimeApiToken, setRealtimeApiToken] = useState(loadStoredRealtimeApiToken);
+  const updateRealtimeApiToken = useCallback((token) => {
+    setRealtimeApiToken(token);
+    saveRealtimeApiToken(token);
+  }, []);
+
   // リアルタイムタブ(強震モニタ/S-net)がアクティブな間だけWS接続を張る。
   // 他タブ表示中は enabled=false になり、フック内部で自動的に切断される。
-  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, activeNav === "realtime");
+  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, activeNav === "realtime", realtimeApiToken);
 
   // タブバーで、既にアクティブなタブをもう一度タップした時に、フローティングを
   // 開閉トグルさせるための信号。値そのものに意味は無く、変化すること自体を
@@ -15456,6 +15536,8 @@ export default function App() {
                   onChangeStationListDisplayMode={handleChangeStationListDisplayMode}
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
+                  realtimeApiToken={realtimeApiToken}
+                  onChangeRealtimeApiToken={updateRealtimeApiToken}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={broadcastTestTsunami}
                   onCancelTestTsunami={cancelTestTsunami}
@@ -15550,6 +15632,8 @@ export default function App() {
               onChangeStationListDisplayMode={handleChangeStationListDisplayMode}
               experimentalFeaturesEnabled={experimentalFeaturesEnabled}
               onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
+              realtimeApiToken={realtimeApiToken}
+              onChangeRealtimeApiToken={updateRealtimeApiToken}
               testTsunami={testTsunami}
               onBroadcastTestTsunami={broadcastTestTsunami}
               onCancelTestTsunami={cancelTestTsunami}
