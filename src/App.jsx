@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
+import { intensityToShindoColor, NO_DATA_COLOR } from "./shindoColorScale";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -11,7 +12,7 @@ import { useRealtimeStream } from "./useRealtimeStream";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.0.4";
+const APP_VERSION = "0.0.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1782,13 +1783,13 @@ function MapCanvas({
     const source = map.getSource("realtime-points");
     if (!source) return;
 
-    const scheme = colorSchemeRef.current?.colors ?? QUAKE_COLOR_SCHEMES.jma.colors;
-
+    // 震度階級(0,1,2...)配色ではなく、強震モニタ/S-net本来の連続
+    // グラデーション配色を使う。平常時(震度0未満の微小な値)も含めて
+    // 観測点ごとの実際の揺れの強さの違いが見えるようにするため。
     const features = realtimeStations.map((s) => {
       const value = realtimeValues.get(s.id);
       const hasData = value !== undefined;
-      const key = hasData ? intensityValueToKey(value) : "?";
-      const dotColor = scheme[key]?.bg ?? scheme["?"]?.bg ?? "rgba(128,128,128,0.4)";
+      const dotColor = hasData ? intensityToShindoColor(value) : NO_DATA_COLOR;
       return {
         type: "Feature",
         geometry: { type: "Point", coordinates: [s.lon, s.lat] },
@@ -3170,7 +3171,7 @@ function saveRealtimeApiToken(token) {
   }
 }
 
-const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.skotm.workers.dev";
+const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.example.workers.dev";
 
 // MapCanvasのrealtimeValuesデフォルト引数用。`= new Map()`を直接デフォルト値に
 // 書くと毎レンダーで新しい参照が作られ、依存配列比較で無駄な再計算を招くため、
@@ -13405,6 +13406,16 @@ export default function App() {
   const activeNavRef = useRef(activeNav);
   useEffect(() => { activeNavRef.current = activeNav; }, [activeNav]);
 
+  // リアルタイムタブ(強震モニタ/S-net)は、一度開いたらアプリを閉じるまで
+  // 接続を維持する(他タブに移っても切断しない)。この state は一度trueに
+  // なったら二度とfalseへは戻さない(=「タブを開いた」という事実の記録)。
+  const [realtimeEverActivated, setRealtimeEverActivated] = useState(false);
+  useEffect(() => {
+    if (activeNav === "realtime" && !realtimeEverActivated) {
+      setRealtimeEverActivated(true);
+    }
+  }, [activeNav, realtimeEverActivated]);
+
   // リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン。
   // 設定タブ「詳細設定」から入力・変更できる。
   const [realtimeApiToken, setRealtimeApiToken] = useState(loadStoredRealtimeApiToken);
@@ -13413,9 +13424,9 @@ export default function App() {
     saveRealtimeApiToken(token);
   }, []);
 
-  // リアルタイムタブ(強震モニタ/S-net)がアクティブな間だけWS接続を張る。
-  // 他タブ表示中は enabled=false になり、フック内部で自動的に切断される。
-  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, activeNav === "realtime", realtimeApiToken);
+  // 上記の通り、一度リアルタイムタブを開けば以降はアプリを閉じる
+  // (このコンポーネントがアンマウントされる)までWS接続を維持し続ける。
+  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, realtimeEverActivated, realtimeApiToken);
 
   // タブバーで、既にアクティブなタブをもう一度タップした時に、フローティングを
   // 開閉トグルさせるための信号。値そのものに意味は無く、変化すること自体を
