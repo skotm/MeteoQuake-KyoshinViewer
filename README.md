@@ -2,6 +2,23 @@
 > [!NOTE] 
 現在開発中であり、APIトークンを設定しているので、リアルタイム震度は利用できません。
 
+地震・津波情報、気象情報を閲覧することができます。
+
+アプリ内のタブごとに、以下の情報を確認することができます。
+
+### **地震情報**
+  <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/c5297fdd-1c50-4b18-bb80-b0be32356a59" />
+
+  <div>P2P地震情報APIから取得した地震情報を表示します。その他、気象庁の震度データベースから取得した地震情報や、地震の推計震度分布を表示することができます。
+
+### **津波情報**
+  <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/dfae9d01-cbda-47ea-bb8a-07f27493bce4" />
+
+
+
+  <div>地震等に伴い気象庁から発表される 大津波警報, 津波警報, 津波注意報, 津波予報 のデータを表示します。その他、津波を引き起こした地震や観測された津波の最大波(参考値)を確認することができます。
+  
+
 ## クレジット・謝辞
 ### 出典
 - [海しる 強震動情報レイヤー](https://www.msil.go.jp/msil/htm/main.html)
