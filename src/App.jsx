@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
-import { intensityToShindoColor, NO_DATA_COLOR } from "./shindoColorScale";
+import { intensityToShindoColor } from "./shindoColorScale";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -12,7 +12,7 @@ import { intensityToShindoColor, NO_DATA_COLOR } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.0.5";
+const APP_VERSION = "0.0.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1549,11 +1549,11 @@ function MapCanvas({
                 10, 6,
                 14, 9,
               ],
-              // データなし観測点は薄いグレーの点として表示し、震度が
-              // 入っている観測点と区別できるようにする(dotColorが
-              // 未設定の場合のフォールバック)。
+              // データが無い観測点はGeoJSON生成側(useEffect)でそもそも
+              // featuresに含めていないため、ここでのフォールバック分岐は
+              // 実質発生しない。それでも将来の保険として"?"色は残しておく。
               "circle-color": ["coalesce", ["get", "dotColor"], "rgba(128,128,128,0.4)"],
-              "circle-stroke-width": ["case", ["get", "hasData"], 0.5, 0],
+              "circle-stroke-width": 0.5,
               "circle-stroke-color": "rgba(255,255,255,0.6)",
             },
           });
@@ -1786,24 +1786,34 @@ function MapCanvas({
     // 震度階級(0,1,2...)配色ではなく、強震モニタ/S-net本来の連続
     // グラデーション配色を使う。平常時(震度0未満の微小な値)も含めて
     // 観測点ごとの実際の揺れの強さの違いが見えるようにするため。
-    const features = realtimeStations.map((s) => {
-      const value = realtimeValues.get(s.id);
-      const hasData = value !== undefined;
-      const dotColor = hasData ? intensityToShindoColor(value) : NO_DATA_COLOR;
-      return {
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [s.lon, s.lat] },
-        properties: {
-          id: s.id,
-          source: s.source,
-          name: s.name,
-          stationCode: s.station_code,
-          intensity: hasData ? value : null,
-          hasData,
-          dotColor,
-        },
-      };
-    });
+    //
+    // データが無い観測点は表示しない(要件により、灰色の点として
+    // 出すのではなく配列自体から除外する)。
+    //
+    // MapLibreのcircleレイヤーはsymbolレイヤーと違いsort-keyが無く、
+    // 「GeoJSON中のfeatureの並び順=描画順(後に来るものが上に重なる)」
+    // という仕様なので、震度の大きい観測点を上に見せるには配列自体を
+    // 震度の昇順(小さい→大きい)にソートしておく必要がある。
+    const features = realtimeStations
+      .filter((s) => realtimeValues.has(s.id))
+      .map((s) => {
+        const value = realtimeValues.get(s.id);
+        const dotColor = intensityToShindoColor(value);
+        return {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+          properties: {
+            id: s.id,
+            source: s.source,
+            name: s.name,
+            stationCode: s.station_code,
+            intensity: value,
+            hasData: true,
+            dotColor,
+          },
+        };
+      })
+      .sort((a, b) => a.properties.intensity - b.properties.intensity);
 
     source.setData({ type: "FeatureCollection", features });
   }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers]);
