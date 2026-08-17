@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.0.8";
+const APP_VERSION = "0.0.9";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -7556,6 +7556,7 @@ function BottomDock({
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
+  realtimeDataTime,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -8731,6 +8732,7 @@ function BottomDock({
       <div
         aria-hidden={!isWide && snapIndex === 0 && !isDragging}
         style={{
+          position: "relative",
           height: isWide ? "100%" : currentHeight,
           paddingTop: isWide ? 14 : 0, // ハンドルが無い分、上に少し余白を持たせる
           overflow: "hidden",
@@ -8740,7 +8742,25 @@ function BottomDock({
           pointerEvents: isWide || snapIndex > 0 || isDragging ? "auto" : "none",
         }}
       >
-        {/* ドラッグハンドル — 広い画面(isWide)では高さを変える操作自体が無いため
+        {/* リアルタイムタブ専用: 表示中の震度データの観測時刻を
+            フローティングパネル左上に表示する。ドラッグ操作の邪魔にならないよう
+            pointerEvents:none にし、ハンドル行より前面(絶対配置)に置く。 */}
+        {active === "realtime" && realtimeDataTime && (
+          <div
+            style={{
+              position: "absolute",
+              top: 8,
+              left: 14,
+              fontSize: 11,
+              fontVariantNumeric: "tabular-nums",
+              color: `rgba(${tokens.ink},0.55)`,
+              pointerEvents: "none",
+              zIndex: 1,
+            }}
+          >
+            {realtimeDataTime.toLocaleTimeString("ja-JP", { hour12: false })} 時点
+          </div>
+        )}        {/* ドラッグハンドル — 広い画面(isWide)では高さを変える操作自体が無いため
             表示しない。狭い画面(縦持ち)でのみ、常に上部に固定表示する。
             以前は当たり判定を absolute で上下に張り出す構成にしていたが、
             重ね合わせが原因と思われる表示崩れが発生したため、
@@ -13410,7 +13430,7 @@ function SettingsBody({
    APP ROOT
    ───────────────────────────────────────────────────── */
 export default function App() {
-  const [activeNav, setActiveNav] = useState("quake");
+  const [activeNav, setActiveNav] = useState("realtime");
   // WebSocketの受信ハンドラ(古いクロージャのまま生き続ける)から常に最新の
   // activeNavを参照できるようにするためのref。緊急地震速報の自動表示切り替えに使う。
   const activeNavRef = useRef(activeNav);
@@ -15559,6 +15579,7 @@ export default function App() {
                   onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
                   realtimeApiToken={realtimeApiToken}
                   onChangeRealtimeApiToken={updateRealtimeApiToken}
+                  realtimeDataTime={realtimeStream.dataTime}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={broadcastTestTsunami}
                   onCancelTestTsunami={cancelTestTsunami}
@@ -15655,6 +15676,7 @@ export default function App() {
               onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
               realtimeApiToken={realtimeApiToken}
               onChangeRealtimeApiToken={updateRealtimeApiToken}
+              realtimeDataTime={realtimeStream.dataTime}
               testTsunami={testTsunami}
               onBroadcastTestTsunami={broadcastTestTsunami}
               onCancelTestTsunami={cancelTestTsunami}
