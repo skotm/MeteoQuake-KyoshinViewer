@@ -30,6 +30,9 @@ export interface RealtimeStreamState {
   // id -> 計測震度相当値(データが無い/無効化された観測点はキーごと存在しない)
   values: Map<number, number>;
   serverTime: string | null;
+  // 直近に受信したWSメッセージが指すデータ時刻(サーバー側の観測時刻)。
+  // bootstrap直後・まだ差分を1件も受け取っていない間はnull。
+  dataTime: Date | null;
   lastError: string | null;
 }
 
@@ -46,11 +49,13 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
     stations: [],
     values: new Map(),
     serverTime: null,
+    dataTime: null,
     lastError: null,
   });
 
   // 受信値の実体はrefで持ち、setStateは間引いて呼ぶ
   const valuesRef = useRef<Map<number, number>>(new Map());
+  const latestDataTimeRef = useRef<Date | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -70,7 +75,11 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
     if (!dirtyRef.current) return;
     dirtyRef.current = false;
     // Mapを複製してstateに渡す(参照を変えないとReactが変化を検知できないため)
-    setState((prev) => ({ ...prev, values: new Map(valuesRef.current) }));
+    setState((prev) => ({
+      ...prev,
+      values: new Map(valuesRef.current),
+      dataTime: latestDataTimeRef.current,
+    }));
   }, []);
 
   const applyEntries = useCallback((entries: IntensityEntry[]) => {
@@ -166,6 +175,8 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
         try {
           const msg = decodeIntensityDelta(ev.data);
           applyEntries(msg.entries);
+          latestDataTimeRef.current = msg.dataTime;
+          dirtyRef.current = true;
         } catch (err) {
           // 1メッセージのデコード失敗で接続全体を落とす必要は無いので、
           // ログだけ残して読み飛ばす
@@ -214,7 +225,8 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
       if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
       if (flushTimerRef.current) clearInterval(flushTimerRef.current);
       teardownConnection();
-      setState({ status: "idle", stations: [], values: new Map(), serverTime: null, lastError: null });
+      latestDataTimeRef.current = null;
+      setState({ status: "idle", stations: [], values: new Map(), serverTime: null, dataTime: null, lastError: null });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, token, flush, applyEntries]);
