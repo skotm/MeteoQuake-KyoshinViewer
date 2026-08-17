@@ -6,8 +6,11 @@
  *  2. WS {baseUrl}/v1/stream に接続し、以降は差分バイナリを受信
  *  3. 受信値は毎回の再レンダーを避けるため ref に蓄積し、一定間隔
  *     (UPDATE_THROTTLE_MS)でまとめてReact stateへ反映する
- *     (station-points更新と同様、setDataの頻度を抑える狙い)
- *  4. タブが非アクティブ(enabled=false)の間は接続を張らない
+ *  4. タブが非アクティブ(enabled=false)になっても即座には切断しない。
+ *     DISCONNECT_GRACE_MSの猶予期間中にタブへ戻れば、再接続・再bootstrapを
+ *     せずそのまま同じ接続を使い続ける(タブの行き来のたびに毎回
+ *     bootstrap+WS再接続が走っていた問題への対応)。猶予期間を過ぎても
+ *     非アクティブなままなら、そこで初めて実際に切断する。
  */
 import { useEffect, useRef, useState, useCallback } from "react";
 import { decodeIntensityDelta, type IntensityEntry } from "./realtimeProtocolClient";
@@ -22,7 +25,7 @@ export interface RealtimeStation {
 }
 
 export interface RealtimeStreamState {
-  status: "idle" | "connecting" | "open" | "closed" | "error";
+  status: "idle" | "connecting" | "open" | "closed" | "error" | "unauthorized";
   stations: RealtimeStation[];
   // id -> 計測震度相当値(データが無い/無効化された観測点はキーごと存在しない)
   values: Map<number, number>;
@@ -33,6 +36,9 @@ export interface RealtimeStreamState {
 const UPDATE_THROTTLE_MS = 500;
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30_000;
+// タブを離れてから実際に切断するまでの猶予。短いタブの行き来なら
+// この間に収まり、接続を維持したままにできる。
+const DISCONNECT_GRACE_MS = 60_000;
 
 export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: string): RealtimeStreamState {
   const [state, setState] = useState<RealtimeStreamState>({
@@ -49,8 +55,16 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dirtyRef = useRef(false);
+  // true = baseUrl/tokenの変更またはアンマウントによる完全終了。
+  // (enabled=falseの一時停止とは区別する)
   const stoppedRef = useRef(false);
+  const connectingOrConnectedRef = useRef(false);
+
+  // enabled切り替え用のeffectから呼び出せるよう、接続開始/切断の実体をrefに保持する
+  const connectFnRef = useRef<() => void>(() => {});
+  const teardownFnRef = useRef<() => void>(() => {});
 
   const flush = useCallback(() => {
     if (!dirtyRef.current) return;
@@ -70,27 +84,49 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
     dirtyRef.current = true;
   }, []);
 
+  // 接続の確立・維持ロジック本体。baseUrl/tokenが変わらない限り、
+  // enabledのON/OFF(タブの出入り)では再実行されない。
   useEffect(() => {
-    if (!enabled) {
-      return;
-    }
-
     stoppedRef.current = false;
+    connectingOrConnectedRef.current = false;
 
     const httpBase = baseUrl.replace(/\/$/, "");
     const wsBase = httpBase.replace(/^http/, "ws");
 
-    let cancelled = false;
+    function teardownConnection() {
+      wsRef.current?.close();
+      wsRef.current = null;
+      connectingOrConnectedRef.current = false;
+    }
 
     async function bootstrap() {
+      if (stoppedRef.current) return;
+      connectingOrConnectedRef.current = true;
       setState((prev) => ({ ...prev, status: "connecting", lastError: null }));
       try {
         const res = await fetch(`${httpBase}/v1/bootstrap`, {
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         });
+
+        if (res.status === 401) {
+          // トークンが間違っている(または未設定)場合は、何度リトライしても
+          // 成功しない。無限リトライで無駄な負荷をかけないよう、ここで
+          // 打ち切る。ユーザーがトークンを変更すれば(=token依存のeffectが
+          // 再実行されるので)自動的に再挑戦される。
+          if (!stoppedRef.current) {
+            connectingOrConnectedRef.current = false;
+            setState((prev) => ({
+              ...prev,
+              status: "unauthorized",
+              lastError: "認証に失敗しました。アクセストークンを確認してください。",
+            }));
+          }
+          return;
+        }
+
         if (!res.ok) throw new Error(`bootstrap failed: ${res.status}`);
         const data = await res.json();
-        if (cancelled) return;
+        if (stoppedRef.current) return;
 
         valuesRef.current = new Map(
           (data.values as Array<{ id: number; intensity: number }>).map((v) => [v.id, v.intensity])
@@ -105,14 +141,15 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
 
         connectWs();
       } catch (err) {
-        if (cancelled) return;
+        if (stoppedRef.current) return;
+        connectingOrConnectedRef.current = false;
         setState((prev) => ({ ...prev, status: "error", lastError: String(err) }));
         scheduleReconnect();
       }
     }
 
     function connectWs() {
-      if (cancelled) return;
+      if (stoppedRef.current) return;
       const streamUrl = new URL(`${wsBase}/v1/stream`);
       if (token) streamUrl.searchParams.set("token", token);
       const ws = new WebSocket(streamUrl.toString());
@@ -121,7 +158,7 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
-        if (!cancelled) setState((prev) => ({ ...prev, status: "open", lastError: null }));
+        if (!stoppedRef.current) setState((prev) => ({ ...prev, status: "open", lastError: null }));
       };
 
       ws.onmessage = (ev) => {
@@ -137,7 +174,8 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
       };
 
       ws.onclose = () => {
-        if (cancelled) return;
+        connectingOrConnectedRef.current = false;
+        if (stoppedRef.current) return;
         setState((prev) => ({ ...prev, status: "closed" }));
         scheduleReconnect();
       };
@@ -145,12 +183,12 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
       ws.onerror = () => {
         // onerrorの後にoncloseも呼ばれるので、再接続スケジューリングは
         // oncloseに一本化する(ここでは状態更新のみ)
-        if (!cancelled) setState((prev) => ({ ...prev, status: "error" }));
+        if (!stoppedRef.current) setState((prev) => ({ ...prev, status: "error" }));
       };
     }
 
     function scheduleReconnect() {
-      if (cancelled || stoppedRef.current) return;
+      if (stoppedRef.current) return;
       const attempt = reconnectAttemptRef.current++;
       const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
       reconnectTimerRef.current = setTimeout(() => {
@@ -160,20 +198,45 @@ export function useRealtimeStream(baseUrl: string, enabled: boolean, token?: str
       }, delay);
     }
 
-    bootstrap();
+    connectFnRef.current = () => {
+      if (stoppedRef.current || connectingOrConnectedRef.current) return;
+      bootstrap();
+    };
+    teardownFnRef.current = teardownConnection;
+
     flushTimerRef.current = setInterval(flush, UPDATE_THROTTLE_MS);
 
     return () => {
-      cancelled = true;
+      // baseUrl/tokenが変わった場合、またはアンマウント時のみ実行される
+      // (enabledはこのeffectの依存に含めていないため、タブの出入りでは実行されない)
       stoppedRef.current = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current);
       if (flushTimerRef.current) clearInterval(flushTimerRef.current);
-      wsRef.current?.close();
-      wsRef.current = null;
+      teardownConnection();
       setState({ status: "idle", stations: [], values: new Map(), serverTime: null, lastError: null });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, enabled, token]);
+  }, [baseUrl, token, flush, applyEntries]);
+
+  // enabled(タブのアクティブ/非アクティブ)の切り替えに反応する軽量なeffect。
+  // ここではWS接続の生成・破棄そのものは行わず、上のeffectが用意した
+  // connectFnRef/teardownFnRef経由で「開始する」「猶予期間後に止める」を
+  // 指示するだけ。
+  useEffect(() => {
+    if (enabled) {
+      if (disconnectTimerRef.current) {
+        clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+      connectFnRef.current();
+    } else {
+      disconnectTimerRef.current = setTimeout(() => {
+        teardownFnRef.current();
+        setState((prev) => (prev.status === "idle" ? prev : { ...prev, status: "idle" }));
+      }, DISCONNECT_GRACE_MS);
+    }
+  }, [enabled]);
 
   return state;
 }
