@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.5";
+const APP_VERSION = "0.1.6";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -15766,14 +15766,19 @@ export default function App() {
         {/* 震度しきい値バー — 強震モニタ/S-netの震度凡例を兼ねた、表示しきい値
             スライダー。時刻バッジと同じく全タブ共通(地震・津波・潮位観測点を
             選択している間は showRealtimeMapLayers 自体がfalseになるため非表示)。
-            緊急地震速報の予想震度凡例(eewMapLegendVisible)と同じ右上の位置を
-            使うため、そちらが出ている間はこのバーを隠す(震度凡例同士が
-            重ならないよう、EEWの凡例を優先する)。 */}
-        {showRealtimeMapLayers && !eewMapLegendVisible && (
-          <div style={{
+            EEWの予想震度凡例・地震/津波の凡例は画面右上、このバーは縦画面で
+            左上・横画面(isWide)で右下と、位置が分かれているため重ならない。
+            そのため緊急地震速報の表示中も隠さず、常時表示する。 */}
+        {showRealtimeMapLayers && (
+          <div style={isWide ? {
+            position: "absolute",
+            right: 16,
+            bottom: "calc(16px + env(safe-area-inset-bottom))",
+            zIndex: 30,
+          } : {
             position: "absolute",
             top: "calc(16px + env(safe-area-inset-top))",
-            right: 16,
+            left: 16,
             zIndex: 30,
           }}>
             <RealtimeIntensityThresholdBar
