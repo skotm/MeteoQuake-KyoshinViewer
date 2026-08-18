@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.2.3";
+const APP_VERSION = "0.2.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8012,7 +8012,10 @@ function BottomDock({
   function handleSelectQuakeForScroll(id) {
     if (scrollRef.current) listScrollTopRef.current = scrollRef.current.scrollTop;
     killScrollMomentum();
-    onSelectQuake(id);
+    // 今見ているタブ(地震タブ/リアルタイムタブ)を選択のoriginとして渡す。
+    // これにより、地震タブで選んだ地震がリアルタイムタブに、リアルタイムタブで
+    // 選んだ地震が地震タブに、それぞれ反映されないようにする(App側で判定)。
+    onSelectQuake(id, active);
     setSnapIndex(1);
   }
 
@@ -13452,6 +13455,7 @@ function SettingsBody({
             </div>
             <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.55)`, marginBottom: 10, lineHeight: 1.5 }}>
               強震モニタ・S-netのリアルタイム震度配信サーバーへの接続に使うトークンです。
+              このアプリは公開配信されるため、ここに入力したトークンは秘匿情報として扱われません(無差別アクセスを防ぐための簡易フィルタです)。
             </div>
             <input
               type="text"
@@ -14006,10 +14010,24 @@ export default function App() {
   //   このselectQuake()を通すことで、state更新と完全に同じタイミング(同期的)
   //   でrefも更新されるようにする。
   const selectedQuakeIdRef = useRef(null);
-  const selectQuake = useCallback((id) => {
+  // 地震タブの一覧と、リアルタイムタブの「直近の地震」一覧、どちらから選んだ
+  // かを覚えておく。地震タブで開いた地震をリアルタイムタブに、逆にリアルタイム
+  // タブで開いた地震を地震タブに、それぞれ反映させないため(要件により)。
+  // null(未指定)は「地震タブ相当」として扱う。地図クリックやEEWの関連地震
+  // カードなど、一覧経由でない選択(=このoriginの区別が本来関係ない選択)は
+  // すべてこちらのデフォルト挙動(地震タブ側)に倒す。
+  const [selectedQuakeOrigin, setSelectedQuakeOrigin] = useState(null); // "quake" | "realtime" | null
+  const selectQuake = useCallback((id, origin) => {
     console.log("[quake-select-diag][selectQuake]", { from: selectedQuakeIdRef.current, to: id });
     selectedQuakeIdRef.current = id;
     setSelectedQuakeId(id);
+    if (id == null) {
+      setSelectedQuakeOrigin(null);
+    } else if (origin !== undefined) {
+      // 続報での自動差し替え(successor更新)などorigin未指定の呼び出しでは、
+      // 元々どちらのタブが選んだ地震かをそのまま引き継ぐ。
+      setSelectedQuakeOrigin(origin);
+    }
   }, []);
 
   // 津波情報(P2P地震情報API)。地震情報と同じWebSocket接続を共有する(下のuseEffect参照)。
@@ -14761,12 +14779,23 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // 地震タブで選んだ地震はリアルタイムタブに、リアルタイムタブで選んだ地震は
+  // 地震タブに、それぞれ反映しない(要件)。selectedQuakeOriginが「今見ている
+  // タブ」と一致する場合だけ、実際に選択中として扱う。地震タブ・リアルタイム
+  // タブ以外(設定タブなど)では、従来どおりorigin区別なく常に反映する。
+  const quakeTabSelectedQuakeId = selectedQuakeOrigin === "realtime" ? null : selectedQuakeId;
+  const realtimeTabSelectedQuakeId = selectedQuakeOrigin === "realtime" ? selectedQuakeId : null;
+  const quakeSelectionRelevantToCurrentView =
+    activeNav === "realtime" ? realtimeTabSelectedQuakeId
+    : activeNav === "quake" ? quakeTabSelectedQuakeId
+    : selectedQuakeId;
+
   // 選択中の地震 + 観測点マスタが揃ったら、観測点ごとの震度に緯度経度を割り当てる。
   // 気象庁 震度データベース検索から開いた地震(searchQuake)は quakes には入っていないため、
   // そちらも見つからなかった場合のフォールバックとして探す。
   // (effectiveQuakesを使うことで、地震情報テスト配信中のダミー地震も選択・表示できる)
-  const selectedQuake = effectiveQuakes.find(q => q.id === selectedQuakeId)
-    || (searchQuake && searchQuake.id === selectedQuakeId ? searchQuake : null);
+  const selectedQuake = effectiveQuakes.find(q => q.id === quakeSelectionRelevantToCurrentView)
+    || (searchQuake && searchQuake.id === quakeSelectionRelevantToCurrentView ? searchQuake : null);
 
   // 観測点データが多い地震(震度データベース検索由来ではない、通常の地震一覧からの選択)は、
   // 観測点マスタとの突き合わせ(resolveStationPoints)が重くなり、選択直後に一瞬固まって
@@ -15040,7 +15069,15 @@ export default function App() {
   // どちらのタブを見ていても、緊急地震速報の詳細画面(eewDetailOpen)を開いている
   // 間はEEW以外の表示を一切出さない(震源・観測点・断層・津波予報区の色分け等、
   // 緊急地震速報の内容に集中してもらうため)。
-  const showQuakeMapLayers = !eewDetailOpen && (activeNav === "quake" || activeNav === "settings" || (activeNav === "tsunami" && causingQuakeCard != null));
+  // リアルタイムタブの「直近の地震一覧」から地震を選んだ場合も、地震タブと同じく
+  // 震源・観測点・震度塗り分けを地図に出す(realtimeTabSelectedQuakeIdで判定する
+  // ことで、地震タブ側で選んだ地震がリアルタイムタブに漏れて表示されないようにする)。
+  const showQuakeMapLayers = !eewDetailOpen && (
+    activeNav === "quake"
+    || activeNav === "settings"
+    || (activeNav === "tsunami" && causingQuakeCard != null)
+    || (activeNav === "realtime" && realtimeTabSelectedQuakeId != null)
+  );
 
   // 断層・プレート境界だけは例外。showQuakeMapLayers(震源・観測点・震度塗り分け等)は
   // 緊急地震速報の表示中はすべて隠すが、断層・プレート境界は地理的な背景情報であり、
@@ -15070,8 +15107,12 @@ export default function App() {
   // よう非表示にする。緊急地震速報の詳細表示中は、以前は他タブと同様に隠して
   // いたが、緊急地震速報の最大予測震度エリアと合わせて見たい場面が多いため
   // 隠さないようにした。
+  // 地震の選択は、quakeSelectionRelevantToCurrentView(タブごとに反映範囲を
+  // 分けたもの)で判定する。たとえば地震タブで地震を選んでいても、今
+  // リアルタイムタブを見ているなら、その選択はリアルタイムタブには関係ないため
+  // 推計震度分布を隠さない。
   const showRealtimeMapLayers =
-    selectedQuakeId == null
+    quakeSelectionRelevantToCurrentView == null
     && selectedTsunamiId == null
     && selectedTideStationCode == null;
   const selectedFromRecent = effectiveTsunamis.find(t => t.id === selectedTsunamiId) || null;
@@ -15912,7 +15953,7 @@ export default function App() {
                       uiScale={wideUIScale}
                       quakes={effectiveQuakes}
                   quakeStatus={quakeStatus}
-                  selectedQuakeId={selectedQuakeId}
+                  selectedQuakeId={quakeSelectionRelevantToCurrentView}
                   onSelectQuake={selectQuake}
                   tsunamis={effectiveTsunamis}
                   tsunamiStatus={tsunamiStatus}
@@ -16009,7 +16050,7 @@ export default function App() {
               onLayerOpenChange={setLayerOpen}
               quakes={effectiveQuakes}
               quakeStatus={quakeStatus}
-              selectedQuakeId={selectedQuakeId}
+              selectedQuakeId={quakeSelectionRelevantToCurrentView}
               onSelectQuake={selectQuake}
               tsunamis={effectiveTsunamis}
               tsunamiStatus={tsunamiStatus}
