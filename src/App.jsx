@@ -9727,7 +9727,7 @@ function RealtimeDataTimeBadge({ dataTime }) {
     <Glass
       radius={999}
       style={{
-        padding: "6px 14px",
+        padding: "0 14px",
         display: "inline-flex",
         alignItems: "center",
       }}
@@ -9737,6 +9737,7 @@ function RealtimeDataTimeBadge({ dataTime }) {
           position: "relative",
           zIndex: 1,
           fontSize: 11,
+          fontWeight: 700,
           fontVariantNumeric: "tabular-nums",
           color: `rgba(${tokens.ink},0.85)`,
           whiteSpace: "nowrap",
