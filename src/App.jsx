@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.3";
+const APP_VERSION = "0.1.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -14785,6 +14785,17 @@ export default function App() {
   // 実際にどの回の予報区を塗るかはtsunamiForMapDisplay(下)が決める。
   const showTsunamiMapLayers = !eewDetailOpen && (activeNav === "tsunami" || activeNav === "settings");
 
+  // MapCanvasに渡す「実質的なeewDetailOpen」。リアルタイムタブでは、FABを
+  // タップして開く操作(eewDetailOpen state)を経由せず、アクティブな緊急地震
+  // 速報がある間は常にフローティングへそのまま表示する(BottomDock側の
+  // `active === "realtime" && hasActiveEew`と同じ考え方)。MapCanvas側の
+  // 予想震度凡例(EEW_FILL_LEGEND_ORDER)もeewDetailOpenプロパティ1つだけで
+  // 表示可否を判定しているため、他タブと同様にリアルタイムタブでもこの
+  // タイミングで凡例が出るよう、ここでeewDetailOpen stateそのものではなく
+  // 合成した値をMapCanvasへ渡す。
+  const eewMapLegendVisible = eewDetailOpen
+    || (activeNav === "realtime" && effectiveEews.some(e => !e.cancelled));
+
   // リアルタイムタブ(強震モニタ/S-net)の推計震度分布は、以前はリアルタイム
   // タブを見ている間だけ表示していたが、常時バックグラウンドで見られるように
   // 全タブ共通(設定タブ含む)で表示するよう変更した。ただし地震・津波・
@@ -15416,7 +15427,7 @@ export default function App() {
           onPickEewEpicenter={handlePickEewEpicenter}
           quakeEpicenterPickActive={quakeEpicenterPickActive}
           onPickQuakeEpicenter={handlePickQuakeEpicenter}
-          eewDetailOpen={eewDetailOpen}
+          eewDetailOpen={eewMapLegendVisible}
           showRealtimeMapLayers={showRealtimeMapLayers}
           realtimeStations={realtimeStream.stations}
           realtimeValues={realtimeStream.values}
