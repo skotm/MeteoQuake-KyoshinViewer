@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.2.2";
+const APP_VERSION = "0.2.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8579,9 +8579,11 @@ function BottomDock({
       {/* 戻るボタン — 地震を選択している間だけ、パネルのすぐ上に浮かぶ。
           Glass(パネル本体)の兄弟として置くことで、currentHeightの変化
           (ドラッグ含む)にそのまま追従できるようにしている。
+          リアルタイムタブの「直近の地震一覧」から選んだ場合も、地震タブと
+          全く同じ詳細表示になるため、この戻るボタンも同様に出す。
           緊急地震速報の詳細を表示している間は、その位置をびっくりボタン側の
           「戻る」ボタンが使うため、ここでは出さない。 */}
-      {!eewDetailOpen && active === "quake" && selectedQuakeId != null && (
+      {!eewDetailOpen && (active === "quake" || active === "realtime") && selectedQuakeId != null && (
         isWide && wideAnchorRect ? createPortal(
           <div style={{
             position: "fixed",
@@ -9164,29 +9166,125 @@ function BottomDock({
               </>
             ) : (
               <>
-                <div style={{
-                  display: "flex", alignItems: "center",
-                  padding: "8px 18px 11px",
-                  borderBottom: `0.5px solid rgba(${tokens.ink},0.15)`,
-                }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, flex: 1, color: `rgba(${tokens.ink},0.9)` }}>
-                    地図レイヤー
-                  </span>
-                </div>
+                {selectedQuakeId != null ? (() => {
+                  // リアルタイムタブの「直近の地震一覧」から選んだ場合も、地震タブと
+                  // 全く同じ詳細表示(近傍地震一覧・発震機構解パネルを含む)にする。
+                  const selected = quakes.find(q => q.id === selectedQuakeId)
+                    || (searchQuake && searchQuake.id === selectedQuakeId ? searchQuake : null);
 
-                {layers.map((l, i) => (
-                  <div key={l.id}>
-                    {i > 0 && <div style={{ height: 0.5, background: `rgba(${tokens.ink},0.1)`, marginLeft: 18 }}/>}
-                    <div style={{ display: "flex", alignItems: "center", padding: "11px 18px", gap: 10 }}>
-                      <span style={{ fontSize: 14, color: `rgba(${tokens.ink},0.85)`, flex: 1 }}>
-                        {l.label}
-                      </span>
-                      <Toggle on={l.on} onChange={() => onToggleLayer(l.id)}/>
+                  if (!selected) return null;
+
+                  if (nearbyQuakeFor) {
+                    return (
+                      <div key={`${selected.id}:nearby`}>
+                        <NearbyQuakesPanel
+                          place={nearbyQuakeFor}
+                          stations={stations}
+                          colorScheme={colorScheme}
+                          onFoundQuake={onFoundSearchQuake}
+                          onPointsChange={setNearbyEpicenterPoints}
+                          onLoadingChange={setNearbyEpicenterLoading}
+                          epicenterCirclesEnabled={epicenterCirclesEnabled}
+                          onSelectQuake={(id) => {
+                            if (scrollRef.current) nearbyListScrollTopRef.current = scrollRef.current.scrollTop;
+                            setNearbyQuakeFor(null);
+                            handleSelectQuakeForScroll(id);
+                          }}
+                        />
+                      </div>
+                    );
+                  }
+                  if (mechDetailOpen) {
+                    return (
+                      <div key={`${selected.id}:mech`}>
+                        <QuakeMechDetailPanel quake={selected}/>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={selected.id}>
+                      <PanelDragHandoffCard onHandoffToPanelDrag={handlePointerDown}>
+                        <QuakeDetailCard quake={selected}/>
+                      </PanelDragHandoffCard>
+                      {!selected.isEqdb && <QuakeMessageCard quake={selected}/>}
+                      {shouldShowNearbyQuakeButton(selected) && (
+                        <div style={{ margin: "2px 14px 8px" }}>
+                          <PressableButton
+                            type="button"
+                            onClick={() => {
+                              if (scrollRef.current) scrollRef.current.scrollTop = 0;
+                              setNearbyOriginId(selected.id);
+                              setNearbyQuakeFor(selected.place);
+                              setSnapIndex(3);
+                            }}
+                            style={{
+                              width: "100%", padding: "10px 12px", borderRadius: 12,
+                              border: "none", cursor: "pointer",
+                              background: `rgba(${tokens.ink},0.08)`,
+                              boxShadow: `inset 0 0 0 0.5px rgba(${tokens.ink},0.14)`,
+                              color: tokens.text, fontSize: 13, fontWeight: 600,
+                              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                            }}
+                          >
+                            この震源の近傍で発生した地震
+                          </PressableButton>
+                        </div>
+                      )}
+                      {stationPoints.length > 0 && (
+                        <StationPointsList points={stationPoints} displayMode={stationListDisplayMode}
+                          openKey={stationDetailOpenKey} onOpenKeyChange={setStationDetailOpenKey}/>
+                      )}
+                      {/* 発震機構解はおおむねM5.0以上でないと気象庁側で解析されないため、
+                          それ未満の地震ではボタン自体を出さない。 */}
+                      {selected.magnitude != null && selected.magnitude >= 5.0 && (
+                        <div style={{ margin: "8px 14px 4px" }}>
+                          <PressableButton
+                            type="button"
+                            onClick={() => {
+                              if (scrollRef.current) scrollRef.current.scrollTop = 0;
+                              setMechDetailOpen(true);
+                              setSnapIndex(3);
+                            }}
+                            style={{
+                              width: "100%", padding: "10px 12px", borderRadius: 12,
+                              border: "none", cursor: "pointer",
+                              background: `rgba(${tokens.ink},0.08)`,
+                              boxShadow: `inset 0 0 0 0.5px rgba(${tokens.ink},0.14)`,
+                              color: tokens.text, fontSize: 13, fontWeight: 600,
+                              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                            }}
+                          >
+                            この地震の詳細
+                          </PressableButton>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })() : (
+                  <>
+                    <div style={{
+                      display: "flex", alignItems: "center",
+                      padding: "8px 18px 11px",
+                      borderBottom: `0.5px solid rgba(${tokens.ink},0.15)`,
+                    }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, flex: 1, color: `rgba(${tokens.ink},0.9)` }}>
+                        直近の地震
+                      </span>
+                    </div>
 
-                {/* フローティング部分(レイヤー一覧)とボタン類(ナビ行)の境界線 */}
+                    {quakes.slice(0, 5).map((q, i) => (
+                      <QuakeListRow
+                        key={q.id}
+                        quake={q}
+                        showDivider={i > 0}
+                        colorScheme={colorScheme}
+                        onSelect={() => handleSelectQuakeForScroll(q.id)}
+                      />
+                    ))}
+                  </>
+                )}
+
+                {/* フローティング部分(直近の地震一覧/詳細)とボタン類(ナビ行)の境界線 */}
                 <div style={{ height: 0.5, background: `rgba(${tokens.ink},0.22)`, margin: "2px 0 0" }}/>
               </>
             )}
