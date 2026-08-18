@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.0.9";
+const APP_VERSION = "0.1.0";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8684,6 +8684,37 @@ function BottomDock({
         )
       )}
 
+      {/* リアルタイムタブ専用: 表示中の震度データの観測時刻。
+          フローティングパネルの兄弟要素として外に出し、他の戻るボタン等と
+          同じ考え方でフローティングの動きに追従させる。
+          広い画面(isWide)では、パネルの高さ変化(レイヤーパネルの開閉など)には
+          追従させず、画面下端に固定する(左位置だけパネル/レールの左端=
+          wideAnchorRect.leftに揃える)。狭い画面(縦持ち)では、他の戻るボタンと
+          同様にcurrentHeight基準でパネル上端付近に追従させる。 */}
+      {active === "realtime" && realtimeDataTime && (
+        isWide && wideAnchorRect ? createPortal(
+          <div style={{
+            position: "fixed",
+            left: wideAnchorRect.left,
+            bottom: 16,
+            zIndex: 50,
+          }}>
+            <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
+          </div>,
+          document.body
+        ) : (
+        <div style={{
+          position: "absolute",
+          left: 14,
+          bottom: currentHeight + NAV_ROW_HEIGHT + 8,
+          transition: isDragging ? "none" : "bottom 0.4s cubic-bezier(.22,1,.36,1)",
+          zIndex: 10,
+        }}>
+          <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
+        </div>
+        )
+      )}
+
       {(() => {
         const GlassOrPlain = isWide ? "div" : Glass;
         const glassProps = isWide
@@ -8742,25 +8773,7 @@ function BottomDock({
           pointerEvents: isWide || snapIndex > 0 || isDragging ? "auto" : "none",
         }}
       >
-        {/* リアルタイムタブ専用: 表示中の震度データの観測時刻を
-            フローティングパネル左上に表示する。ドラッグ操作の邪魔にならないよう
-            pointerEvents:none にし、ハンドル行より前面(絶対配置)に置く。 */}
-        {active === "realtime" && realtimeDataTime && (
-          <div
-            style={{
-              position: "absolute",
-              top: 8,
-              left: 14,
-              fontSize: 11,
-              fontVariantNumeric: "tabular-nums",
-              color: `rgba(${tokens.ink},0.55)`,
-              pointerEvents: "none",
-              zIndex: 1,
-            }}
-          >
-            {realtimeDataTime.toLocaleTimeString("ja-JP", { hour12: false })} 時点
-          </div>
-        )}        {/* ドラッグハンドル — 広い画面(isWide)では高さを変える操作自体が無いため
+        {/* ドラッグハンドル — 広い画面(isWide)では高さを変える操作自体が無いため
             表示しない。狭い画面(縦持ち)でのみ、常に上部に固定表示する。
             以前は当たり判定を absolute で上下に張り出す構成にしていたが、
             重ね合わせが原因と思われる表示崩れが発生したため、
@@ -9416,6 +9429,41 @@ function StationMarkerToggleButton({ visible, onClick }) {
           <circle cx="12" cy="12" r="9.5" strokeDasharray={visible ? "3 3" : undefined}/>
         </svg>
       </button>
+    </Glass>
+  );
+}
+
+/* ─────────────────────────────────────────────────────
+   REALTIME DATA TIME BADGE — リアルタイムタブで表示中の震度データの
+   観測時刻を示す、横長のガラスピル。以前はフローティングパネル内部
+   (左上)に素のテキストとして表示していたが、戻るボタン(BackToListButton)
+   と同様にパネルの外側の兄弟要素として置き、フローティングの動き
+   (パネルの高さ変化・ドラッグ)に追従させるようにした。
+   ───────────────────────────────────────────────────── */
+function RealtimeDataTimeBadge({ dataTime }) {
+  const { tokens } = useContext(ThemeContext);
+  return (
+    <Glass
+      radius={999}
+      style={{
+        padding: "6px 14px",
+        display: "inline-flex",
+        alignItems: "center",
+      }}
+    >
+      <span
+        style={{
+          position: "relative",
+          zIndex: 1,
+          fontSize: 11,
+          fontVariantNumeric: "tabular-nums",
+          color: `rgba(${tokens.ink},0.55)`,
+          whiteSpace: "nowrap",
+          pointerEvents: "none",
+        }}
+      >
+        {dataTime.toLocaleTimeString("ja-JP", { hour12: false })} 時点
+      </span>
     </Glass>
   );
 }
