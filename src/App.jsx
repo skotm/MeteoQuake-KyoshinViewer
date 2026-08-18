@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.2";
+const APP_VERSION = "0.1.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8698,16 +8698,18 @@ function BottomDock({
           フローティングパネルの兄弟要素として外に出し、他の戻るボタン等と
           同じ考え方でフローティングの動きに追従させる。
           広い画面(isWide)では、パネルの高さ変化(レイヤーパネルの開閉など)には
-          追従させず、画面下端に固定する(左位置だけパネル/レールの左端=
-          wideAnchorRect.leftに揃える)。狭い画面(縦持ち)では、他の戻るボタンと
+          追従させず、画面下端に固定する。左位置は、サイドナブレール+パネルの
+          共有ガラス(App側でtop:16〜bottom:16の全高固定)の外(右側=地図側)に
+          出すため、wideAnchorRect.right基準にする(wideAnchorRect.leftだと
+          水平方向はガラスの内側に収まってしまい、フローティングの中に
+          埋もれて見えるため)。狭い画面(縦持ち)では、他の戻るボタンと
           同様にcurrentHeight基準でパネル上端付近に追従させる。 */}
       {selectedQuakeId == null && selectedTsunamiId == null
         && selectedTideStationCode == null && realtimeDataTime && (
         isWide && wideAnchorRect ? createPortal(
           <div style={{
-
             position: "fixed",
-            left: wideAnchorRect.left,
+            left: wideAnchorRect.right + 12,
             bottom: 16,
             zIndex: 50,
           }}>
