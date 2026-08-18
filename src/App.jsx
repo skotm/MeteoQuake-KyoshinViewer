@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.6";
+const APP_VERSION = "0.1.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9510,22 +9510,7 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
           </span>
         </div>
 
-        <div style={{ position: "relative", paddingTop: 9 }}>
-          {/* しきい値マーカー(▽) — バーの上端を指す三角形 */}
-          <div style={{
-            position: "absolute",
-            left: `${pct}%`,
-            top: 0,
-            transform: "translateX(-50%)",
-            width: 0,
-            height: 0,
-            borderLeft: "5px solid transparent",
-            borderRight: "5px solid transparent",
-            borderTop: `7px solid ${intensityToShindoColor(clampedThreshold)}`,
-            filter: "drop-shadow(0 1px 1.5px rgba(0,0,0,0.5))",
-            pointerEvents: "none",
-          }}/>
-
+        <div style={{ position: "relative", paddingTop: 4 }}>
           {/* カラースケール本体(ドラッグでしきい値を変更) */}
           <div
             ref={trackRef}
@@ -9553,6 +9538,21 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
                 pointerEvents: "none",
               }}/>
             ))}
+
+            {/* しきい値マーカー — 白いバー(黒縁)。トラックの上下に少しはみ出させる */}
+            <div style={{
+              position: "absolute",
+              left: `${pct}%`,
+              top: -4,
+              bottom: -4,
+              width: 4,
+              transform: "translateX(-50%)",
+              background: "#fff",
+              border: "1.5px solid #000",
+              borderRadius: 2,
+              boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
+              pointerEvents: "none",
+            }}/>
           </div>
 
           {/* 目盛りラベル */}
