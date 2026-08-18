@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.2.1";
+const APP_VERSION = "0.2.2";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9503,7 +9503,7 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
             onPointerCancel={handlePointerUp}
             style={{
               position: "relative",
-              height: 22,
+              height: 18,
               borderRadius: 6,
               background: SHINDO_GRADIENT_CSS,
               touchAction: "none",
@@ -9541,7 +9541,7 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
           </div>
 
           {/* 目盛りラベル */}
-          <div style={{ position: "relative", height: 12, marginTop: 2 }}>
+          <div style={{ position: "relative", height: 12, marginTop: 0 }}>
             {SHINDO_THRESHOLD_TICKS.map(v => (
               <span key={v} style={{
                 position: "absolute",
