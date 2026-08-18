@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.1";
+const APP_VERSION = "0.1.2";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8684,14 +8684,19 @@ function BottomDock({
         )
       )}
 
-      {/* リアルタイムタブ専用: 表示中の震度データの観測時刻。
+      {/* リアルタイム震度データの観測時刻。以前はリアルタイムタブでのみ表示して
+          いたが、全タブ共通(設定タブ含む)で常時表示するように変更した。
+          ただし地震・津波・潮位観測点のいずれかを選択して詳細を見ている間、
+          および緊急地震速報の詳細表示中は、地図上の推計震度分布自体を
+          隠す(showRealtimeMapLayers)ため、時刻表示も合わせて隠す。
           フローティングパネルの兄弟要素として外に出し、他の戻るボタン等と
           同じ考え方でフローティングの動きに追従させる。
           広い画面(isWide)では、パネルの高さ変化(レイヤーパネルの開閉など)には
           追従させず、画面下端に固定する(左位置だけパネル/レールの左端=
           wideAnchorRect.leftに揃える)。狭い画面(縦持ち)では、他の戻るボタンと
           同様にcurrentHeight基準でパネル上端付近に追従させる。 */}
-      {active === "realtime" && realtimeDataTime && (
+      {!eewDetailOpen && selectedQuakeId == null && selectedTsunamiId == null
+        && selectedTideStationCode == null && realtimeDataTime && (
         isWide && wideAnchorRect ? createPortal(
           <div style={{
             position: "fixed",
@@ -14767,8 +14772,15 @@ export default function App() {
   // 実際にどの回の予報区を塗るかはtsunamiForMapDisplay(下)が決める。
   const showTsunamiMapLayers = !eewDetailOpen && (activeNav === "tsunami" || activeNav === "settings");
 
-  // リアルタイムタブ(強震モニタ/S-net)専用。他タブとは重ねずに単独表示する。
-  const showRealtimeMapLayers = !eewDetailOpen && activeNav === "realtime";
+  // リアルタイムタブ(強震モニタ/S-net)の推計震度分布は、以前はリアルタイム
+  // タブを見ている間だけ表示していたが、常時バックグラウンドで見られるように
+  // 全タブ共通(設定タブ含む)で表示するよう変更した。ただし地震・津波・
+  // 潮位観測点のいずれかを選択して詳細を見ている間は、その情報に集中できる
+  // よう非表示にする(緊急地震速報の詳細表示中も同様に隠す)。
+  const showRealtimeMapLayers = !eewDetailOpen
+    && selectedQuakeId == null
+    && selectedTsunamiId == null
+    && selectedTideStationCode == null;
   const selectedFromRecent = effectiveTsunamis.find(t => t.id === selectedTsunamiId) || null;
   const selectedFromHistory = !selectedFromRecent
     ? (tsunamiHistory.items.find(t => t.id === selectedTsunamiId) || null)
