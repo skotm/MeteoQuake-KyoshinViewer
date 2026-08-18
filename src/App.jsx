@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.8";
+const APP_VERSION = "0.1.9";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9539,20 +9539,56 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
               }}/>
             ))}
 
-            {/* しきい値マーカー — 白いバー(黒縁)。トラックの上下に少しはみ出させる */}
+            {/* しきい値マーカー — iOSのテキスト選択ハンドルのような「Iビーム」型。
+                上下の丸いキャップ2つ(caps)と、それをつなぐ縦棒(stem)の3枚重ねで
+                作る。stemの上下端はcapsの裏に隠れるので、境界線(黒縁)は
+                capsの分だけで見た目上つながって見える。 */}
             <div style={{
               position: "absolute",
               left: `${pct}%`,
               top: -4,
               bottom: -4,
-              width: 4,
+              width: 14,
               transform: "translateX(-50%)",
-              background: "#fff",
-              border: "1.5px solid #000",
-              borderRadius: 2,
-              boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
               pointerEvents: "none",
-            }}/>
+            }}>
+              {/* 縦棒(左右のみ黒縁) */}
+              <div style={{
+                position: "absolute",
+                left: "50%",
+                top: 3,
+                bottom: 3,
+                width: 4,
+                transform: "translateX(-50%)",
+                background: "#fff",
+                borderLeft: "1.5px solid #000",
+                borderRight: "1.5px solid #000",
+              }}/>
+              {/* 上端キャップ */}
+              <div style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 6,
+                borderRadius: 3,
+                background: "#fff",
+                border: "1.5px solid #000",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
+              }}/>
+              {/* 下端キャップ */}
+              <div style={{
+                position: "absolute",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                height: 6,
+                borderRadius: 3,
+                background: "#fff",
+                border: "1.5px solid #000",
+                boxShadow: "0 1px 2px rgba(0,0,0,0.5)",
+              }}/>
+            </div>
           </div>
 
           {/* 目盛りラベル */}
