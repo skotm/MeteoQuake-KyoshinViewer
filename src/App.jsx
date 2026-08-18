@@ -8507,8 +8507,12 @@ function BottomDock({
           (right:16, backButtonBottom)に出す。詳細表示中(eewDetailOpen)は他タブの
           戻るボタンを隠すため、この位置を独占できる。詳細表示前(FABの状態)に
           他タブの戻るボタン等がすでにその位置を使っている場合だけ、びっくりボタンを
-          左にずらして重ならないようにする。 */}
-      {hasActiveEew && (
+          左にずらして重ならないようにする。
+          リアルタイムタブでは、下のコンテンツ側(eewDetailOpen判定のternary)で
+          アクティブな緊急地震速報を常にそのままフローティングへ表示するため、
+          タップして開く/閉じるという操作自体が不要になる。そのためこのFAB/
+          戻るボタン自体をリアルタイムタブでは出さない。 */}
+      {hasActiveEew && active !== "realtime" && (
         isWide && wideAnchorRect ? createPortal(
           <div style={{
             position: "fixed",
@@ -8686,19 +8690,22 @@ function BottomDock({
 
       {/* リアルタイム震度データの観測時刻。以前はリアルタイムタブでのみ表示して
           いたが、全タブ共通(設定タブ含む)で常時表示するように変更した。
-          ただし地震・津波・潮位観測点のいずれかを選択して詳細を見ている間、
-          および緊急地震速報の詳細表示中は、地図上の推計震度分布自体を
-          隠す(showRealtimeMapLayers)ため、時刻表示も合わせて隠す。
+          地震・津波・潮位観測点のいずれかを選択して詳細を見ている間は、
+          地図上の推計震度分布自体を隠す(showRealtimeMapLayers)ため、
+          時刻表示も合わせて隠す。緊急地震速報の詳細表示中は
+          showRealtimeMapLayers側で隠さなくなったため、ここでも
+          eewDetailOpenでは隠さない。
           フローティングパネルの兄弟要素として外に出し、他の戻るボタン等と
           同じ考え方でフローティングの動きに追従させる。
           広い画面(isWide)では、パネルの高さ変化(レイヤーパネルの開閉など)には
           追従させず、画面下端に固定する(左位置だけパネル/レールの左端=
           wideAnchorRect.leftに揃える)。狭い画面(縦持ち)では、他の戻るボタンと
           同様にcurrentHeight基準でパネル上端付近に追従させる。 */}
-      {!eewDetailOpen && selectedQuakeId == null && selectedTsunamiId == null
+      {selectedQuakeId == null && selectedTsunamiId == null
         && selectedTideStationCode == null && realtimeDataTime && (
         isWide && wideAnchorRect ? createPortal(
           <div style={{
+
             position: "fixed",
             left: wideAnchorRect.left,
             bottom: 16,
@@ -8842,9 +8849,10 @@ function BottomDock({
             スクロールコンテナをそのまま緊急地震速報の表示にも使い回してしまい、
             EEWを開く前/後でスクロール位置が引き継がれてしまう(EEWを見ている間に
             スクロールすると、閉じた時にタブ本来の内容側もそのスクロール位置に
-            なってしまう)ため。 */}
+            なってしまう)ため。リアルタイムタブの「タップ不要でそのままEEWを表示」
+            (active === "realtime" && hasActiveEew)も同じ理由でkeyに含める。 */}
         <div
-          key={`${eewDetailOpen}:${active}:${quakeViewMode}:${tsunamiViewMode}:${selectedQuakeId != null}:${selectedTsunamiId != null}:${selectedTideStationCode != null}`}
+          key={`${eewDetailOpen || (active === "realtime" && hasActiveEew)}:${active}:${quakeViewMode}:${tsunamiViewMode}:${selectedQuakeId != null}:${selectedTsunamiId != null}:${selectedTideStationCode != null}`}
           ref={scrollRef}
           style={{
             flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", overflowAnchor: "none",
@@ -8856,7 +8864,7 @@ function BottomDock({
           }}
         >
           <div>
-            {eewDetailOpen ? (
+            {eewDetailOpen || (active === "realtime" && hasActiveEew) ? (
               <>
                 {/* 緊急地震速報の詳細 — 地震タブでQuakeDetailCard/QuakeMessageCardが
                     並ぶのと全く同じように、囲みなしでカードを直接並べる。タブの中身を
@@ -8865,7 +8873,10 @@ function BottomDock({
                     (警報/予報)」ブロックと「第◯報」ブロック(見出し部分)だけを
                     PanelDragHandoffCardで包む(EewDetailFloatingCard内部で対応)。
                     最大予測震度カードなど、それ以外の部分をドラッグしてもパネルの
-                    高さは変わらないようにするため。 */}
+                    高さは変わらないようにするため。
+                    リアルタイムタブでは、eewDetailOpen(FABをタップして開く操作)を
+                    経由せず、アクティブな緊急地震速報がある間は常にこの表示になる
+                    (タップ不要でそのままフローティングに出る)。 */}
                 {eews.map(eew => (
                   <EewDetailFloatingCard key={eew.eventId} eew={eew} onHandoffToPanelDrag={handlePointerDown}/>
                 ))}
@@ -14776,9 +14787,11 @@ export default function App() {
   // タブを見ている間だけ表示していたが、常時バックグラウンドで見られるように
   // 全タブ共通(設定タブ含む)で表示するよう変更した。ただし地震・津波・
   // 潮位観測点のいずれかを選択して詳細を見ている間は、その情報に集中できる
-  // よう非表示にする(緊急地震速報の詳細表示中も同様に隠す)。
-  const showRealtimeMapLayers = !eewDetailOpen
-    && selectedQuakeId == null
+  // よう非表示にする。緊急地震速報の詳細表示中は、以前は他タブと同様に隠して
+  // いたが、緊急地震速報の最大予測震度エリアと合わせて見たい場面が多いため
+  // 隠さないようにした。
+  const showRealtimeMapLayers =
+    selectedQuakeId == null
     && selectedTsunamiId == null
     && selectedTideStationCode == null;
   const selectedFromRecent = effectiveTsunamis.find(t => t.id === selectedTsunamiId) || null;
