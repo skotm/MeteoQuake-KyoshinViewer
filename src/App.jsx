@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.2.6";
+const APP_VERSION = "0.2.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1546,8 +1546,8 @@ function MapCanvas({
               "circle-radius": [
                 "interpolate", ["linear"], ["zoom"],
                 4, 2.5,
-                7, 4.5,
-                10, 7,
+                7, 5,
+                10, 8.5,
                 14, 12,
                 18, 20,
               ],
