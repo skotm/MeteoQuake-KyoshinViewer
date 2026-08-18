@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext, forwardRef, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
-import { intensityToShindoColor } from "./shindoColorScale";
+import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY } from "./shindoColorScale";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.4";
+const APP_VERSION = "0.1.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -996,6 +996,7 @@ function MapCanvas({
   showRealtimeMapLayers = false,
   realtimeStations = [],
   realtimeValues = EMPTY_REALTIME_VALUES,
+  realtimeIntensityThreshold = SHINDO_MIN_INTENSITY,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -1788,14 +1789,16 @@ function MapCanvas({
     // 観測点ごとの実際の揺れの強さの違いが見えるようにするため。
     //
     // データが無い観測点は表示しない(要件により、灰色の点として
-    // 出すのではなく配列自体から除外する)。
+    // 出すのではなく配列自体から除外する)。さらに、震度しきい値バー
+    // (RealtimeIntensityThresholdBar)で設定したrealtimeIntensityThreshold
+    // 未満の観測点も、地図を揺れの小さい点で埋め尽くさないよう除外する。
     //
     // MapLibreのcircleレイヤーはsymbolレイヤーと違いsort-keyが無く、
     // 「GeoJSON中のfeatureの並び順=描画順(後に来るものが上に重なる)」
     // という仕様なので、震度の大きい観測点を上に見せるには配列自体を
     // 震度の昇順(小さい→大きい)にソートしておく必要がある。
     const features = realtimeStations
-      .filter((s) => realtimeValues.has(s.id))
+      .filter((s) => realtimeValues.has(s.id) && realtimeValues.get(s.id) >= realtimeIntensityThreshold)
       .map((s) => {
         const value = realtimeValues.get(s.id);
         const dotColor = intensityToShindoColor(value);
@@ -1816,7 +1819,7 @@ function MapCanvas({
       .sort((a, b) => a.properties.intensity - b.properties.intensity);
 
     source.setData({ type: "FeatureCollection", features });
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -3458,6 +3461,35 @@ function saveEstIntensityEnabled(enabled) {
     localStorage.setItem(EST_INTENSITY_ENABLED_STORAGE_KEY, String(enabled));
   } catch (err) {
     console.warn("推計震度分布の表示設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
+   リアルタイム震度(強震モニタ/S-net)の表示しきい値。震度しきい値バー
+   (RealtimeIntensityThresholdBar)で設定した「これ未満の観測点は地図に
+   出さない」値を、推計震度分布と同様にlocalStorageへ永続化する。
+   デフォルトは配色スケールの下限(=しきい値なし、全観測点を表示)。
+   ───────────────────────────────────────────────────── */
+const REALTIME_INTENSITY_THRESHOLD_STORAGE_KEY = "realtimeIntensityThreshold";
+
+function loadStoredRealtimeIntensityThreshold() {
+  try {
+    const saved = localStorage.getItem(REALTIME_INTENSITY_THRESHOLD_STORAGE_KEY);
+    if (saved != null) {
+      const n = Number(saved);
+      if (Number.isFinite(n)) return Math.min(Math.max(n, SHINDO_MIN_INTENSITY), SHINDO_MAX_INTENSITY);
+    }
+  } catch (err) {
+    console.warn("震度しきい値の設定を読み込めませんでした:", err);
+  }
+  return SHINDO_MIN_INTENSITY;
+}
+
+function saveRealtimeIntensityThreshold(threshold) {
+  try {
+    localStorage.setItem(REALTIME_INTENSITY_THRESHOLD_STORAGE_KEY, String(threshold));
+  } catch (err) {
+    console.warn("震度しきい値の設定を保存できませんでした:", err);
   }
 }
 
@@ -9405,6 +9437,150 @@ function TsunamiGradeLegend({ areas, tsunamiHeightByStation = {} }) {
 }
 
 /* ─────────────────────────────────────────────────────
+   REALTIME INTENSITY THRESHOLD BAR
+   強震モニタ/S-net本来の連続震度カラースケール(shindoColorScale.ts)を
+   横長のグラデーションバーとして示す、震度凡例 兼 表示しきい値スライダー。
+   三角マーカーをドラッグすると、地図上に表示する観測点の下限震度
+   (App側のrealtimeIntensityThreshold・localStorage永続化)を変更できる。
+   ───────────────────────────────────────────────────── */
+const SHINDO_GRADIENT_CSS = (() => {
+  const stops = [];
+  for (let v = SHINDO_MIN_INTENSITY; v <= SHINDO_MAX_INTENSITY + 1e-9; v += 0.5) {
+    const pct = ((v - SHINDO_MIN_INTENSITY) / (SHINDO_MAX_INTENSITY - SHINDO_MIN_INTENSITY)) * 100;
+    stops.push(`${intensityToShindoColor(v)} ${pct.toFixed(2)}%`);
+  }
+  return `linear-gradient(to right, ${stops.join(", ")})`;
+})();
+
+const SHINDO_THRESHOLD_TICKS = (() => {
+  const ticks = [];
+  for (let v = Math.ceil(SHINDO_MIN_INTENSITY); v <= Math.floor(SHINDO_MAX_INTENSITY); v++) ticks.push(v);
+  return ticks;
+})();
+
+function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
+  const { tokens } = useContext(ThemeContext);
+  const trackRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+
+  const clampedThreshold = Math.min(Math.max(threshold, SHINDO_MIN_INTENSITY), SHINDO_MAX_INTENSITY);
+  const pct = ((clampedThreshold - SHINDO_MIN_INTENSITY) / (SHINDO_MAX_INTENSITY - SHINDO_MIN_INTENSITY)) * 100;
+
+  // 配色そのままの0.1刻みにスナップする。
+  const valueFromClientX = (clientX) => {
+    const el = trackRef.current;
+    if (!el) return clampedThreshold;
+    const rect = el.getBoundingClientRect();
+    const ratio = Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
+    const raw = SHINDO_MIN_INTENSITY + ratio * (SHINDO_MAX_INTENSITY - SHINDO_MIN_INTENSITY);
+    return Math.round(raw * 10) / 10;
+  };
+
+  const handlePointerDown = (e) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragging(true);
+    onChangeThreshold(valueFromClientX(e.clientX));
+  };
+  const handlePointerMove = (e) => {
+    if (!dragging) return;
+    onChangeThreshold(valueFromClientX(e.clientX));
+  };
+  const handlePointerUp = (e) => {
+    setDragging(false);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+  };
+
+  return (
+    <Glass radius={14} style={{ animation: "appear 0.35s cubic-bezier(.25,1,.5,1)" }}>
+      <div style={{ padding: "9px 12px 8px", width: 224 }}>
+        <div style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+          marginBottom: 8,
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: `rgba(${tokens.ink},0.5)` }}>
+            表示する震度
+          </span>
+          <span style={{
+            fontSize: 12, fontWeight: 700, color: tokens.text,
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {clampedThreshold.toFixed(1)} 以上
+          </span>
+        </div>
+
+        <div style={{ position: "relative", paddingTop: 9 }}>
+          {/* しきい値マーカー(▽) — バーの上端を指す三角形 */}
+          <div style={{
+            position: "absolute",
+            left: `${pct}%`,
+            top: 0,
+            transform: "translateX(-50%)",
+            width: 0,
+            height: 0,
+            borderLeft: "5px solid transparent",
+            borderRight: "5px solid transparent",
+            borderTop: `7px solid ${intensityToShindoColor(clampedThreshold)}`,
+            filter: "drop-shadow(0 1px 1.5px rgba(0,0,0,0.5))",
+            pointerEvents: "none",
+          }}/>
+
+          {/* カラースケール本体(ドラッグでしきい値を変更) */}
+          <div
+            ref={trackRef}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+            style={{
+              position: "relative",
+              height: 22,
+              borderRadius: 6,
+              background: SHINDO_GRADIENT_CSS,
+              touchAction: "none",
+              cursor: "pointer",
+            }}
+          >
+            {SHINDO_THRESHOLD_TICKS.map(v => (
+              <div key={v} style={{
+                position: "absolute",
+                left: `${((v - SHINDO_MIN_INTENSITY) / (SHINDO_MAX_INTENSITY - SHINDO_MIN_INTENSITY)) * 100}%`,
+                top: 0,
+                bottom: 0,
+                width: 1,
+                background: "rgba(0,0,0,0.25)",
+                pointerEvents: "none",
+              }}/>
+            ))}
+          </div>
+
+          {/* 目盛りラベル */}
+          <div style={{ position: "relative", height: 12, marginTop: 2 }}>
+            {SHINDO_THRESHOLD_TICKS.map(v => (
+              <span key={v} style={{
+                position: "absolute",
+                left: `${((v - SHINDO_MIN_INTENSITY) / (SHINDO_MAX_INTENSITY - SHINDO_MIN_INTENSITY)) * 100}%`,
+                transform: v === SHINDO_MIN_INTENSITY
+                  ? "translateX(0%)"
+                  : v === SHINDO_MAX_INTENSITY ? "translateX(-100%)" : "translateX(-50%)",
+                fontSize: 8,
+                fontVariantNumeric: "tabular-nums",
+                color: `rgba(${tokens.ink},0.45)`,
+                whiteSpace: "nowrap",
+              }}>
+                {v}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Glass>
+  );
+}
+
+
+/* ─────────────────────────────────────────────────────
    BACK TO LIST BUTTON
    地震を選択中に地図上へ浮かぶ丸い「戻る」ボタン。
    押すと選択を解除し、パネルを「中高」にして一覧表示へ戻る。
@@ -13647,6 +13823,15 @@ export default function App() {
     saveEstIntensityEnabled(next);
   }
 
+  // リアルタイム震度(強震モニタ/S-net)の表示しきい値。震度しきい値バーの
+  // 三角マーカーで操作し、推計震度分布と同じくlocalStorageに永続化する。
+  const [realtimeIntensityThreshold, setRealtimeIntensityThresholdState] = useState(loadStoredRealtimeIntensityThreshold);
+
+  function handleChangeRealtimeIntensityThreshold(next) {
+    setRealtimeIntensityThresholdState(next);
+    saveRealtimeIntensityThreshold(next);
+  }
+
   // 細分区域を震度の色で塗りつぶすかどうか。推計震度分布と同じく設定タブで操作し、localStorageに永続化する。
   const [areaFillEnabled, setAreaFillEnabledState] = useState(loadStoredAreaFillEnabled);
 
@@ -15431,6 +15616,7 @@ export default function App() {
           showRealtimeMapLayers={showRealtimeMapLayers}
           realtimeStations={realtimeStream.stations}
           realtimeValues={realtimeStream.values}
+          realtimeIntensityThreshold={realtimeIntensityThreshold}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
@@ -15574,6 +15760,26 @@ export default function App() {
             zIndex: 30,
           }}>
             <TsunamiGradeLegend areas={tsunamiAreasForMap} tsunamiHeightByStation={tsunamiHeightByStation}/>
+          </div>
+        )}
+
+        {/* 震度しきい値バー — 強震モニタ/S-netの震度凡例を兼ねた、表示しきい値
+            スライダー。時刻バッジと同じく全タブ共通(地震・津波・潮位観測点を
+            選択している間は showRealtimeMapLayers 自体がfalseになるため非表示)。
+            緊急地震速報の予想震度凡例(eewMapLegendVisible)と同じ右上の位置を
+            使うため、そちらが出ている間はこのバーを隠す(震度凡例同士が
+            重ならないよう、EEWの凡例を優先する)。 */}
+        {showRealtimeMapLayers && !eewMapLegendVisible && (
+          <div style={{
+            position: "absolute",
+            top: "calc(16px + env(safe-area-inset-top))",
+            right: 16,
+            zIndex: 30,
+          }}>
+            <RealtimeIntensityThresholdBar
+              threshold={realtimeIntensityThreshold}
+              onChangeThreshold={handleChangeRealtimeIntensityThreshold}
+            />
           </div>
         )}
 
