@@ -12,7 +12,7 @@ import { intensityToShindoColor } from "./shindoColorScale";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.1.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9457,7 +9457,7 @@ function RealtimeDataTimeBadge({ dataTime }) {
           zIndex: 1,
           fontSize: 11,
           fontVariantNumeric: "tabular-nums",
-          color: `rgba(${tokens.ink},0.55)`,
+          color: `rgba(${tokens.ink},0.85)`,
           whiteSpace: "nowrap",
           pointerEvents: "none",
         }}
