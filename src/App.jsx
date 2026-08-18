@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9492,25 +9492,8 @@ function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
 
   return (
     <Glass radius={14} style={{ animation: "appear 0.35s cubic-bezier(.25,1,.5,1)" }}>
-      <div style={{ padding: "9px 12px 8px", width: 224 }}>
-        <div style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-          marginBottom: 8,
-        }}>
-          <span style={{ fontSize: 10, fontWeight: 700, color: `rgba(${tokens.ink},0.5)` }}>
-            表示する震度
-          </span>
-          <span style={{
-            fontSize: 12, fontWeight: 700, color: tokens.text,
-            fontVariantNumeric: "tabular-nums",
-          }}>
-            {clampedThreshold.toFixed(1)} 以上
-          </span>
-        </div>
-
-        <div style={{ position: "relative", paddingTop: 4 }}>
+      <div style={{ padding: "8px 12px", width: 224 }}>
+        <div style={{ position: "relative" }}>
           {/* カラースケール本体(ドラッグでしきい値を変更) */}
           <div
             ref={trackRef}
