@@ -118,8 +118,10 @@ const COLOR_STOPS: ReadonlyArray<readonly [number, number, number, number]> = [
   [7.0, 170, 0, 0],
 ];
 
-const MIN_INTENSITY = COLOR_STOPS[0][0];
-const MAX_INTENSITY = COLOR_STOPS[COLOR_STOPS.length - 1][0];
+// 震度しきい値バー(RealtimeIntensityThresholdBar)のグラデーション生成・
+// スライダー可動域の算出に使うため、範囲の両端をエクスポートしておく。
+export const MIN_INTENSITY = COLOR_STOPS[0][0];
+export const MAX_INTENSITY = COLOR_STOPS[COLOR_STOPS.length - 1][0];
 
 /**
  * 計測震度相当値(連続値)から表示色を求める。
