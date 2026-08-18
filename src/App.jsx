@@ -13452,7 +13452,6 @@ function SettingsBody({
             </div>
             <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.55)`, marginBottom: 10, lineHeight: 1.5 }}>
               強震モニタ・S-netのリアルタイム震度配信サーバーへの接続に使うトークンです。
-              このアプリは公開配信されるため、ここに入力したトークンは秘匿情報として扱われません(無差別アクセスを防ぐための簡易フィルタです)。
             </div>
             <input
               type="text"
