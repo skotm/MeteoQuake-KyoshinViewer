@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.5";
+const APP_VERSION = "0.3.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -11872,6 +11872,7 @@ const SETTINGS_MENU = [
 const TAB_SETTINGS_CATEGORIES = [
   { id: "quake",    label: "地震" },
   { id: "tsunami",  label: "津波" },
+  { id: "realtime", label: "リアルタイム" },
 ];
 
 // カテゴリごとの項目一覧。地震・利用規約等の各カテゴリはSettingsBody内で専用に
