@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.4";
+const APP_VERSION = "0.3.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9272,6 +9272,13 @@ function BottomDock({
                   );
                 })() : (
                   <div style={{ margin: "8px 6px" }}>
+                    <div style={{
+                      fontSize: 12, fontWeight: 700,
+                      color: `rgba(${tokens.ink},0.5)`,
+                      padding: "0 6px 6px",
+                    }}>
+                      直近で発生した地震
+                    </div>
                     <Glass radius={14} style={{ overflow: "hidden" }}>
                       {quakes.slice(0, 5).map((q, i) => (
                         <QuakeListRow
