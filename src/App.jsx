@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION ="0.3.8";
+const APP_VERSION = "0.3.8";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -997,7 +997,7 @@ function MapCanvas({
   realtimeStations = [],
   realtimeValues = EMPTY_REALTIME_VALUES,
   realtimeIntensityThreshold = SHINDO_MIN_INTENSITY,
-  realtimeRisingEnabled = true,
+  realtimeRisingEnabled = false,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -3563,7 +3563,7 @@ function saveRealtimeIntensityThreshold(threshold) {
    震度上昇中レイヤー。強震モニタ/S-netの観測点のうち、前回の更新時点より
    震度が上昇した観測点を黄色いリング(縁取り)で強調表示する設定のON/OFF。
    推計震度分布と同様、localStorageに保存し次回起動時も覚えておく。
-   デフォルトはON。
+   デフォルトはOFF。
    ───────────────────────────────────────────────────── */
 const REALTIME_RISING_ENABLED_STORAGE_KEY = "showRealtimeRisingIntensity";
 
@@ -3575,7 +3575,7 @@ function loadStoredRealtimeRisingEnabled() {
   } catch (err) {
     console.warn("震度上昇中レイヤーの表示設定を読み込めませんでした:", err);
   }
-  return true;
+  return false;
 }
 
 function saveRealtimeRisingEnabled(enabled) {
@@ -13557,7 +13557,7 @@ function SettingsBody({
         <SettingsCard>
           <SettingsToggleRow
             label="震度上昇中を表示"
-            description="強震モニタ/S-netの観測点のうち、前回の更新時点より震度が上昇した観測点を、黄色いリングで強調表示します。"
+            description="強震モニタの観測点のうち、前回の更新時点より震度が上昇した観測点を、黄色いリングで強調表示します。"
             checked={realtimeRisingEnabled}
             onChange={() => onChangeRealtimeRisingEnabled(!realtimeRisingEnabled)}
           />
