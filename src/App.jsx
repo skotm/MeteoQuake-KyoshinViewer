@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = 0.3.8";
+const APP_VERSION ="0.3.8";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
