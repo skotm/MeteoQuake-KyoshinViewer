@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, use
 import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
 import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY } from "./shindoColorScale";
+import { ShakeDetectionEngine } from "./shakeDetection";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -12,7 +13,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.9";
+const APP_VERSION = "0.4.0";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -998,6 +999,7 @@ function MapCanvas({
   realtimeValues = EMPTY_REALTIME_VALUES,
   realtimeIntensityThreshold = SHINDO_MIN_INTENSITY,
   realtimeRisingEnabled = false,
+  onShakeEventsChange,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -1034,6 +1036,11 @@ function MapCanvas({
   onSelectEpicenterPointRef.current = onSelectEpicenterPoint;
   const onSelectTideStationRef = useRef(onSelectTideStation);
   onSelectTideStationRef.current = onSelectTideStation;
+  // 揺れ検知(shakeDetection.ts)のtickごとの結果をApp側へ伝えるコールバック。
+  // 同じくrefで最新の関数を参照する(検知処理自体は毎tick走る通常のuseEffect
+  // 依存に含めたくないため)。
+  const onShakeEventsChangeRef = useRef(onShakeEventsChange);
+  onShakeEventsChangeRef.current = onShakeEventsChange;
   const tideStationsInteractiveRef = useRef(tideStationsInteractive);
   tideStationsInteractiveRef.current = tideStationsInteractive;
 
@@ -1526,6 +1533,31 @@ function MapCanvas({
             map.getCanvas().style.cursor = "";
           });
 
+          // 揺れ検知(shakeDetection.ts / ShakeDetectionEngine)で検出したイベントの
+          // 範囲を、観測点の下地として塗りつぶし円で表示する。観測点のドット自体は
+          // この上に重なるよう、realtime-points-layerより先に追加しておく。
+          map.addSource("shake-events", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "shake-events-layer",
+            type: "circle",
+            source: "shake-events",
+            layout: { visibility: "none" },
+            paint: {
+              // ズームに依存させず、検知イベントのレベル(0〜4)だけで大きさを
+              // 決める(観測点マーカーと違い、対象は揺れの「範囲」であって
+              // 特定の地物ではないため)。
+              "circle-radius": ["+", 16, ["*", ["get", "level"], 8]],
+              "circle-color": "#FFC107",
+              "circle-opacity": ["case", ["get", "confirmed"], 0.22, 0.10],
+              "circle-stroke-width": ["case", ["get", "confirmed"], 2, 1],
+              "circle-stroke-color": "#FFC107",
+              "circle-stroke-opacity": ["case", ["get", "confirmed"], 0.9, 0.45],
+            },
+          });
+
           // リアルタイムタブ(強震モニタ/S-net)専用の観測点レイヤー。
           // 数千点を毎秒更新する想定のため、station-points-symbolのような
           // スプライトアイコン方式(震度キー別に画像を切り替える方式)ではなく、
@@ -1810,12 +1842,34 @@ function MapCanvas({
         showRealtimeMapLayers && realtimeRisingEnabled ? "visible" : "none"
       );
     }
+    // 揺れ検知イベントのレイヤーも、強震モニタ本体が表示されている間だけ出す。
+    if (map.getLayer("shake-events-layer")) {
+      map.setLayoutProperty(
+        "shake-events-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
   }, [showRealtimeMapLayers, realtimeRisingEnabled, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
   // 閾値(realtimeIntensityThreshold)を変えても比較が崩れないよう、表示中/非表示中を
   // 問わずデータのある観測点はすべて記録しておく。
   const prevRealtimeValuesRef = useRef(new Map());
+
+  // 揺れ検知エンジン(shakeDetection.ts)本体。一度だけ生成し、以降は
+  // 同じインスタンスを使い回す(内部に観測点ごとの履歴・進行中のイベントを
+  // 保持しているため、tickのたびに作り直すと検知が働かなくなる)。
+  const shakeEngineRef = useRef(null);
+  if (!shakeEngineRef.current) shakeEngineRef.current = new ShakeDetectionEngine();
+
+  // 観測点マスタ(緯度経度)が揃ったら、近傍点リストを再計算する。
+  // 観測点の位置は基本的に変わらないため、realtimeStations自体の参照が
+  // 変わった時(初回取得・更新時)だけ呼び直せば十分。
+  useEffect(() => {
+    if (realtimeStations.length === 0) return;
+    shakeEngineRef.current.initialize(realtimeStations);
+  }, [realtimeStations]);
 
   // リアルタイムタブのデータをGeoJSONに変換して地図へ反映する。
   // 呼び出し元(App)のuseRealtimeStreamが内部で最大2Hz(500ms間隔)に間引いて
@@ -1885,6 +1939,22 @@ function MapCanvas({
       if (realtimeValues.has(s.id)) nextValues.set(s.id, realtimeValues.get(s.id));
     }
     prevRealtimeValuesRef.current = nextValues;
+
+    // 揺れ検知エンジンを1tick分進める。近傍点リストが未構築(観測点マスタ未取得)
+    // の間は空配列が返る。
+    const shakeEvents = shakeEngineRef.current.processTick(realtimeValues, Date.now());
+    const shakeSource = map.getSource("shake-events");
+    if (shakeSource) {
+      shakeSource.setData({
+        type: "FeatureCollection",
+        features: shakeEvents.map(e => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [e.centerLon, e.centerLat] },
+          properties: { id: e.id, level: e.level, confirmed: e.confirmed },
+        })),
+      });
+    }
+    onShakeEventsChangeRef.current?.(shakeEvents);
   }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
@@ -7682,6 +7752,7 @@ function BottomDock({
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
+  shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
@@ -9284,6 +9355,12 @@ function BottomDock({
                 {hasActiveEew && eews.map(eew => (
                   <EewDetailFloatingCard key={eew.eventId} eew={eew} onHandoffToPanelDrag={handlePointerDown}/>
                 ))}
+                {/* 揺れ検知エンジンが検出したイベント(確定分のみ)。緊急地震速報の
+                    下・平常時の内容の上に並べる。未確定のものは地図上のみで示し、
+                    このリストにはノイズを避けるため出さない。 */}
+                {shakeEvents.filter(e => e.confirmed).map(e => (
+                  <ShakeEventCard key={e.id} event={e}/>
+                ))}
                 {selectedQuakeId != null ? (() => {
                   // リアルタイムタブの「直近の地震一覧」から選んだ場合も、地震タブと
                   // 全く同じ詳細表示(近傍地震一覧・発震機構解パネルを含む)にする。
@@ -9836,6 +9913,32 @@ function StationMarkerToggleButton({ visible, onClick }) {
    と同様にパネルの外側の兄弟要素として置き、フローティングの動き
    (パネルの高さ変化・ドラッグ)に追従させるようにした。
    ───────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────
+   SHAKE EVENT CARD — 揺れ検知エンジン(shakeDetection.ts)が検出したイベントを
+   リアルタイムタブのフローティングに表示するための簡易カード。
+   ───────────────────────────────────────────────────── */
+const SHAKE_LEVEL_LABELS = ["小さな揺れを検知", "揺れを検知", "やや強い揺れを検知", "強い揺れを検知", "非常に強い揺れを検知"];
+
+function ShakeEventCard({ event }) {
+  const { tokens } = useContext(ThemeContext);
+  const label = SHAKE_LEVEL_LABELS[event.level] || SHAKE_LEVEL_LABELS[0];
+  return (
+    <div style={{ margin: "8px 6px" }}>
+      <Glass radius={14} tintColor="#FFC107">
+        <div style={{ position: "relative", zIndex: 1, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 4, background: "#FFC107", flexShrink: 0 }}/>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: tokens.text }}>{label}</div>
+            <div style={{ fontSize: 11, color: `rgba(${tokens.ink},0.6)`, marginTop: 1 }}>
+              観測点 {event.pointCount}件
+            </div>
+          </div>
+        </div>
+      </Glass>
+    </div>
+  );
+}
+
 function RealtimeDataTimeBadge({ dataTime }) {
   const { tokens } = useContext(ThemeContext);
   return (
@@ -14065,6 +14168,11 @@ export default function App() {
     saveRealtimeRisingEnabled(next);
   }
 
+  // 揺れ検知エンジン(shakeDetection.ts)が検出したイベントの一覧。MapCanvas側
+  // でtickごとに更新され、コールバック経由でここに渡される。リアルタイムタブの
+  // フローティングでの一覧表示に使う。
+  const [shakeEvents, setShakeEvents] = useState([]);
+
   // 細分区域を震度の色で塗りつぶすかどうか。推計震度分布と同じく設定タブで操作し、localStorageに永続化する。
   const [areaFillEnabled, setAreaFillEnabledState] = useState(loadStoredAreaFillEnabled);
 
@@ -15888,6 +15996,7 @@ export default function App() {
           realtimeValues={realtimeStream.values}
           realtimeIntensityThreshold={realtimeIntensityThreshold}
           realtimeRisingEnabled={realtimeRisingEnabled}
+          onShakeEventsChange={setShakeEvents}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
@@ -16149,6 +16258,7 @@ export default function App() {
                   onChangeRealtimeApiToken={updateRealtimeApiToken}
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+                  shakeEvents={shakeEvents}
                   realtimeDataTime={realtimeStream.dataTime}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={broadcastTestTsunami}
@@ -16248,6 +16358,7 @@ export default function App() {
               onChangeRealtimeApiToken={updateRealtimeApiToken}
               realtimeRisingEnabled={realtimeRisingEnabled}
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+              shakeEvents={shakeEvents}
               realtimeDataTime={realtimeStream.dataTime}
               testTsunami={testTsunami}
               onBroadcastTestTsunami={broadcastTestTsunami}
