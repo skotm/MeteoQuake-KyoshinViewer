@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.1";
+const APP_VERSION = "0.3.2";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9271,27 +9271,19 @@ function BottomDock({
                     </div>
                   );
                 })() : (
-                  <>
-                    <div style={{
-                      display: "flex", alignItems: "center",
-                      padding: "8px 18px 11px",
-                      borderBottom: `0.5px solid rgba(${tokens.ink},0.15)`,
-                    }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, flex: 1, color: `rgba(${tokens.ink},0.9)` }}>
-                        直近の地震
-                      </span>
-                    </div>
-
-                    {quakes.slice(0, 5).map((q, i) => (
-                      <QuakeListRow
-                        key={q.id}
-                        quake={q}
-                        showDivider={i > 0}
-                        colorScheme={colorScheme}
-                        onSelect={() => handleSelectQuakeForScroll(q.id)}
-                      />
-                    ))}
-                  </>
+                  <div style={{ margin: "8px 14px" }}>
+                    <Glass radius={14} style={{ overflow: "hidden" }}>
+                      {quakes.slice(0, 5).map((q, i) => (
+                        <QuakeListRow
+                          key={q.id}
+                          quake={q}
+                          showDivider={i > 0}
+                          colorScheme={colorScheme}
+                          onSelect={() => handleSelectQuakeForScroll(q.id)}
+                        />
+                      ))}
+                    </Glass>
+                  </div>
                 )}
 
                 {/* フローティング部分(直近の地震一覧/詳細)とボタン類(ナビ行)の境界線 */}
