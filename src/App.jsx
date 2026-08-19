@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.8";
+const APP_VERSION = "0.3.9";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -8238,12 +8238,18 @@ function BottomDock({
     highHeight,
     Math.max(fullscreenContentHeight, highHeight),
   ];
-  const [snapIndex, setSnapIndex] = useState(0);
+  // フローティングは、アプリを開いた最初から開いた状態にする(閉じた状態の
+  // 0からは始めない)。開く高さは、タブ切り替え時と同じ基準
+  // (リアルタイムタブは「中中」、それ以外は「中高」)に揃える。
+  const [snapIndex, setSnapIndex] = useState(() => active === "realtime" ? 2 : 3);
 
   // 「今、自分(タブタップの開閉トグル)が開いた状態にしているか」を表すref。
   // タブ切り替えで開いた場合もここを立てておくことで、直後の同じタブの再タップで
   // 正しく閉じられるようにする(現在のsnapIndexの読み取りには依存しない)。
-  const openedByTapRef = useRef(false);
+  // フローティングは最初から開いた状態で始まるため、初期値もtrueにしておく
+  // (falseのままだと、起動直後の最初のタップが「閉じる」ではなく「開く」
+  // (無変化)になってしまう)。
+  const openedByTapRef = useRef(true);
 
   // 別のタブに切り替えた時は、フローティングを「中高」まで開く。
   // (同じタブを再タップした時の開閉トグルとは別物なので、prevActiveRefで
@@ -9003,7 +9009,7 @@ function BottomDock({
           }}
         >
           <div>
-            {eewDetailOpen || (active === "realtime" && hasActiveEew) ? (
+            {eewDetailOpen && active !== "realtime" ? (
               <>
                 {/* 緊急地震速報の詳細 — 地震タブでQuakeDetailCard/QuakeMessageCardが
                     並ぶのと全く同じように、囲みなしでカードを直接並べる。タブの中身を
@@ -9013,9 +9019,9 @@ function BottomDock({
                     PanelDragHandoffCardで包む(EewDetailFloatingCard内部で対応)。
                     最大予測震度カードなど、それ以外の部分をドラッグしてもパネルの
                     高さは変わらないようにするため。
-                    リアルタイムタブでは、eewDetailOpen(FABをタップして開く操作)を
-                    経由せず、アクティブな緊急地震速報がある間は常にこの表示になる
-                    (タップ不要でそのままフローティングに出る)。 */}
+                    リアルタイムタブは、ここではなく最後のelse分岐(active===realtime)
+                    側で、緊急地震速報カードと通常のタブ内容(直近の地震一覧/詳細)を
+                    上下に並べて両方表示するようにしているため、ここでは対象外にする。 */}
                 {eews.map(eew => (
                   <EewDetailFloatingCard key={eew.eventId} eew={eew} onHandoffToPanelDrag={handlePointerDown}/>
                 ))}
@@ -9271,6 +9277,13 @@ function BottomDock({
               </>
             ) : (
               <>
+                {/* 緊急地震速報が発生している間は、リアルタイムタブのフローティング
+                    の1番上に緊急地震速報カードを表示する(地図側の予想震度凡例と
+                    同じ考え方)。ただし他タブと違い、平常時の内容(直近の地震一覧/
+                    詳細)を隠して置き換えるのではなく、その下に続けて表示する。 */}
+                {hasActiveEew && eews.map(eew => (
+                  <EewDetailFloatingCard key={eew.eventId} eew={eew} onHandoffToPanelDrag={handlePointerDown}/>
+                ))}
                 {selectedQuakeId != null ? (() => {
                   // リアルタイムタブの「直近の地震一覧」から選んだ場合も、地震タブと
                   // 全く同じ詳細表示(近傍地震一覧・発震機構解パネルを含む)にする。
