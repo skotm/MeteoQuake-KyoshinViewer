@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.3.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -7980,6 +7980,10 @@ function BottomDock({
       return;
     }
     onSelectQuake(null);
+    // リアルタイムタブの「直近の地震」一覧に戻る時だけ、フローティングの高さを
+    // タブを開いた時と同じ「中中」に揃える(地震タブ側は、詳細を見ていた高さを
+    // そのまま維持する従来の挙動を変えない)。
+    if (active === "realtime") setSnapIndex(2);
   }
   const backFromQuakeLabel =
     mechDetailOpen ? "地震の詳細に戻る" :
