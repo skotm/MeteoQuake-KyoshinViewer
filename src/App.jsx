@@ -13,7 +13,7 @@ import { ShakeDetectionEngine } from "./shakeDetection";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.4.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -999,6 +999,7 @@ function MapCanvas({
   realtimeValues = EMPTY_REALTIME_VALUES,
   realtimeIntensityThreshold = SHINDO_MIN_INTENSITY,
   realtimeRisingEnabled = false,
+  shakeDetectionEnabled = true,
   onShakeEventsChange,
 }) {
   const containerRef = useRef(null);
@@ -1603,34 +1604,6 @@ function MapCanvas({
             setSelectedRealtimePoint(e.features[0].properties);
           });
 
-          // 震度上昇中レイヤー — 前回の更新時点より震度が上昇した観測点の周りに
-          // 黄色いリング(縁取りのみ、塗りなし)を重ねて表示する。realtime-points-layer
-          // の後に追加することで、ドットの上に重なって見えるようにしている。
-          map.addSource("realtime-rising-points", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [] },
-          });
-          map.addLayer({
-            id: "realtime-rising-points-layer",
-            type: "circle",
-            source: "realtime-rising-points",
-            layout: { visibility: "none" },
-            paint: {
-              "circle-radius": [
-                "interpolate", ["linear"], ["zoom"],
-                4, 4.5,
-                7, 7.5,
-                10, 11.5,
-                14, 15.5,
-                18, 25,
-              ],
-              "circle-color": "rgba(0,0,0,0)",
-              "circle-stroke-width": 2,
-              "circle-stroke-color": "#FFE13B",
-            },
-          });
-
-
           map.on("mouseenter", "epicenter-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
           });
@@ -1833,15 +1806,6 @@ function MapCanvas({
       "visibility",
       showRealtimeMapLayers ? "visible" : "none"
     );
-    // 震度上昇中レイヤーは、強震モニタ本体が表示されている(showRealtimeMapLayers)
-    // かつ、設定でONになっている(realtimeRisingEnabled)時だけ表示する。
-    if (map.getLayer("realtime-rising-points-layer")) {
-      map.setLayoutProperty(
-        "realtime-rising-points-layer",
-        "visibility",
-        showRealtimeMapLayers && realtimeRisingEnabled ? "visible" : "none"
-      );
-    }
     // 揺れ検知イベントのレイヤーも、強震モニタ本体が表示されている間だけ出す。
     if (map.getLayer("shake-events-layer")) {
       map.setLayoutProperty(
@@ -1850,7 +1814,7 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-  }, [showRealtimeMapLayers, realtimeRisingEnabled, status]);
+  }, [showRealtimeMapLayers, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
   // 閾値(realtimeIntensityThreshold)を変えても比較が崩れないよう、表示中/非表示中を
@@ -1884,6 +1848,10 @@ function MapCanvas({
     // 震度階級(0,1,2...)配色ではなく、強震モニタ/S-net本来の連続
     // グラデーション配色を使う。平常時(震度0未満の微小な値)も含めて
     // 観測点ごとの実際の揺れの強さの違いが見えるようにするため。
+    // ただし震度上昇中レイヤー(realtimeRisingEnabled)がONの間は、観測点
+    // 本来の配色ではなく「上昇中は黄色、それ以外は震度-3相当の青」に
+    // 上書きする(以前のリング表示から変更し、観測点自体の色を差し替える
+    // 方式にした)。
     //
     // データが無い観測点は表示しない(要件により、灰色の点として
     // 出すのではなく配列自体から除外する)。さらに、震度しきい値バー
@@ -1895,11 +1863,22 @@ function MapCanvas({
     // という仕様なので、震度の大きい観測点を上に見せるには配列自体を
     // 震度の昇順(小さい→大きい)にソートしておく必要がある。
     const prevValues = prevRealtimeValuesRef.current;
+    const calmColor = intensityToShindoColor(SHINDO_MIN_INTENSITY);
     const features = realtimeStations
       .filter((s) => realtimeValues.has(s.id) && realtimeValues.get(s.id) >= realtimeIntensityThreshold)
       .map((s) => {
         const value = realtimeValues.get(s.id);
-        const dotColor = intensityToShindoColor(value);
+        let dotColor;
+        if (realtimeRisingEnabled) {
+          // 海底の観測点(id 5000以上、S-net等)は要件により上昇中判定の対象外。
+          const idNum = Number(s.id);
+          const isOceanBottom = Number.isFinite(idNum) && idNum >= 5000;
+          const prevValue = prevValues.get(s.id);
+          const isRising = !isOceanBottom && prevValue != null && value > prevValue;
+          dotColor = isRising ? "#FFE13B" : calmColor;
+        } else {
+          dotColor = intensityToShindoColor(value);
+        }
         return {
           type: "Feature",
           geometry: { type: "Point", coordinates: [s.lon, s.lat] },
@@ -1918,20 +1897,6 @@ function MapCanvas({
 
     source.setData({ type: "FeatureCollection", features });
 
-    // 震度上昇中レイヤー — 前回のスナップショットより震度が上昇した観測点
-    // (画面に表示中のものに限る)だけを対象にする。海底の観測点(id 5000以上、
-    // S-net等)は要件により対象外にする。
-    const risingSource = map.getSource("realtime-rising-points");
-    if (risingSource) {
-      const risingFeatures = features.filter((f) => {
-        const idNum = Number(f.properties.id);
-        if (Number.isFinite(idNum) && idNum >= 5000) return false;
-        const prevValue = prevValues.get(f.properties.id);
-        return prevValue != null && f.properties.intensity > prevValue;
-      });
-      risingSource.setData({ type: "FeatureCollection", features: risingFeatures });
-    }
-
     // 次回比較用のスナップショットを更新する(表示中/しきい値に関わらず、
     // データのある観測点すべてを対象に記録する)。
     const nextValues = new Map();
@@ -1940,9 +1905,11 @@ function MapCanvas({
     }
     prevRealtimeValuesRef.current = nextValues;
 
-    // 揺れ検知エンジンを1tick分進める。近傍点リストが未構築(観測点マスタ未取得)
-    // の間は空配列が返る。
-    const shakeEvents = shakeEngineRef.current.processTick(realtimeValues, Date.now());
+    // 揺れ検知エンジンを1tick分進める(設定でOFFの間は呼ばない)。
+    // 近傍点リストが未構築(観測点マスタ未取得)の間は空配列が返る。
+    const shakeEvents = shakeDetectionEnabled
+      ? shakeEngineRef.current.processTick(realtimeValues, Date.now())
+      : [];
     const shakeSource = map.getSource("shake-events");
     if (shakeSource) {
       shakeSource.setData({
@@ -1955,7 +1922,7 @@ function MapCanvas({
       });
     }
     onShakeEventsChangeRef.current?.(shakeEvents);
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -3631,7 +3598,8 @@ function saveRealtimeIntensityThreshold(threshold) {
 
 /* ─────────────────────────────────────────────────────
    震度上昇中レイヤー。強震モニタ/S-netの観測点のうち、前回の更新時点より
-   震度が上昇した観測点を黄色いリング(縁取り)で強調表示する設定のON/OFF。
+   震度が上昇した観測点を黄色、それ以外を震度-3相当の青色で表示する設定の
+   ON/OFF(観測点自体の色を上書きする方式。以前のリング表示から変更)。
    推計震度分布と同様、localStorageに保存し次回起動時も覚えておく。
    デフォルトはOFF。
    ───────────────────────────────────────────────────── */
@@ -3653,6 +3621,31 @@ function saveRealtimeRisingEnabled(enabled) {
     localStorage.setItem(REALTIME_RISING_ENABLED_STORAGE_KEY, String(enabled));
   } catch (err) {
     console.warn("震度上昇中レイヤーの表示設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
+   揺れ検知エンジン(shakeDetection.ts)自体のON/OFF。推計震度分布・
+   震度上昇中と同様にlocalStorageに永続化する。デフォルトはON。
+   ───────────────────────────────────────────────────── */
+const SHAKE_DETECTION_ENABLED_STORAGE_KEY = "shakeDetectionEnabled";
+
+function loadStoredShakeDetectionEnabled() {
+  try {
+    const saved = localStorage.getItem(SHAKE_DETECTION_ENABLED_STORAGE_KEY);
+    if (saved === "true") return true;
+    if (saved === "false") return false;
+  } catch (err) {
+    console.warn("地震検知の設定を読み込めませんでした:", err);
+  }
+  return true;
+}
+
+function saveShakeDetectionEnabled(enabled) {
+  try {
+    localStorage.setItem(SHAKE_DETECTION_ENABLED_STORAGE_KEY, String(enabled));
+  } catch (err) {
+    console.warn("地震検知の設定を保存できませんでした:", err);
   }
 }
 
@@ -7752,6 +7745,7 @@ function BottomDock({
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
+  shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
@@ -9318,6 +9312,8 @@ function BottomDock({
                   onChangeRealtimeApiToken={onChangeRealtimeApiToken}
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={onChangeRealtimeRisingEnabled}
+                  shakeDetectionEnabled={shakeDetectionEnabled}
+                  onChangeShakeDetectionEnabled={onChangeShakeDetectionEnabled}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={onBroadcastTestTsunami}
                   onCancelTestTsunami={onCancelTestTsunami}
@@ -13465,6 +13461,7 @@ function SettingsBody({
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
+  shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -13672,8 +13669,14 @@ function SettingsBody({
         <SettingsHeader title="リアルタイム"/>
         <SettingsCard>
           <SettingsToggleRow
+            label="地震検知"
+            description="観測点の震度データから揺れを自動検知し、地図上への表示とリアルタイムタブのフローティングへの一覧表示を行います。"
+            checked={shakeDetectionEnabled}
+            onChange={() => onChangeShakeDetectionEnabled(!shakeDetectionEnabled)}
+          />
+          <SettingsToggleRow
             label="震度上昇中を表示"
-            description="強震モニタの観測点のうち、前回の更新時点より震度が上昇した観測点を、黄色いリングで強調表示します。"
+            description="強震モニタの観測点のうち、前回の更新時点より震度が上昇した観測点を黄色、それ以外を震度-3相当の青色で表示します。"
             checked={realtimeRisingEnabled}
             onChange={() => onChangeRealtimeRisingEnabled(!realtimeRisingEnabled)}
           />
@@ -14166,6 +14169,16 @@ export default function App() {
   function handleChangeRealtimeRisingEnabled(next) {
     setRealtimeRisingEnabledState(next);
     saveRealtimeRisingEnabled(next);
+  }
+
+  // 揺れ検知エンジン(shakeDetection.ts)自体のON/OFF。設定タブ(タブ設定 >
+  // リアルタイム)で操作し、他の設定と同じくlocalStorageに永続化する。
+  const [shakeDetectionEnabled, setShakeDetectionEnabledState] = useState(loadStoredShakeDetectionEnabled);
+
+  function handleChangeShakeDetectionEnabled(next) {
+    setShakeDetectionEnabledState(next);
+    saveShakeDetectionEnabled(next);
+    if (!next) setShakeEvents([]);
   }
 
   // 揺れ検知エンジン(shakeDetection.ts)が検出したイベントの一覧。MapCanvas側
@@ -15996,6 +16009,7 @@ export default function App() {
           realtimeValues={realtimeStream.values}
           realtimeIntensityThreshold={realtimeIntensityThreshold}
           realtimeRisingEnabled={realtimeRisingEnabled}
+          shakeDetectionEnabled={shakeDetectionEnabled}
           onShakeEventsChange={setShakeEvents}
         />
 
@@ -16258,6 +16272,8 @@ export default function App() {
                   onChangeRealtimeApiToken={updateRealtimeApiToken}
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+                  shakeDetectionEnabled={shakeDetectionEnabled}
+                  onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
                   shakeEvents={shakeEvents}
                   realtimeDataTime={realtimeStream.dataTime}
                   testTsunami={testTsunami}
@@ -16358,6 +16374,8 @@ export default function App() {
               onChangeRealtimeApiToken={updateRealtimeApiToken}
               realtimeRisingEnabled={realtimeRisingEnabled}
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+              shakeDetectionEnabled={shakeDetectionEnabled}
+              onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
               shakeEvents={shakeEvents}
               realtimeDataTime={realtimeStream.dataTime}
               testTsunami={testTsunami}
