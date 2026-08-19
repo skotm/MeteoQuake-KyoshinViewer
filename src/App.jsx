@@ -12,7 +12,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.3.3";
+const APP_VERSION = "0.3.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9280,6 +9280,7 @@ function BottomDock({
                           showDivider={i > 0}
                           colorScheme={colorScheme}
                           onSelect={() => handleSelectQuakeForScroll(q.id)}
+                          horizontalPadding={8}
                         />
                       ))}
                     </Glass>
@@ -9861,18 +9862,18 @@ function TideGaugeIcon({ size = 18 }) {
    QUAKE LIST ROW
    地震一覧の1行分。「直近の一覧」と「検索結果一覧」の両方から共通で使う。
    ───────────────────────────────────────────────────── */
-function QuakeListRow({ quake: q, showDivider, colorScheme, onSelect, loading = false }) {
+function QuakeListRow({ quake: q, showDivider, colorScheme, onSelect, loading = false, horizontalPadding = 14 }) {
   const { tokens } = useContext(ThemeContext);
 
   const style = getIntensityStyleFromScheme(colorScheme, q.maxIntensity || "1");
   return (
     <div>
-      {showDivider && <div style={{ height: 0.5, background: `rgba(${tokens.ink},0.08)`, marginLeft: 18 }}/>}
+      {showDivider && <div style={{ height: 0.5, background: `rgba(${tokens.ink},0.08)`, marginLeft: horizontalPadding + 4 }}/>}
       <PressableButton
         onClick={loading ? undefined : onSelect}
         style={{
           width: "100%", display: "flex", alignItems: "center", gap: 10,
-          padding: "9px 14px",
+          padding: `9px ${horizontalPadding}px`,
           background: "transparent",
           textAlign: "left",
           opacity: loading ? 0.5 : 1,
