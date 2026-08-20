@@ -975,6 +975,50 @@ function tsunamiStationIconId(map, color, heightM, dotDiameterPx, barWidthPx, ge
 }
 
 /* ─────────────────────────────────────────────────────
+   揺れ検知イベントの円(shake-events-layer)用ヘルパー。
+   MapLibreのcircle-radius(ピクセル指定)は理論上ズームに依存しないはずだが、
+   環境によってはズームで見た目のサイズが変わって見える問題が解消しなかった
+   ため、確実に「画面上で常に同じピクセルサイズ」になるよう、自前で
+   実座標(緯度経度)の円ポリゴンを毎回組み立てる方式に変更した。
+   目標ピクセル半径を、現在のズームでの実距離(メートル)に変換してから
+   円ポリゴンの頂点を計算する(Web Mercatorの「1ピクセルあたりの距離」の
+   標準的な近似式を使用)。
+   ───────────────────────────────────────────────────── */
+function shakeEventPixelRadiusToMeters(pixelRadius, lat, zoom) {
+  const metersPerPixel = 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+  return pixelRadius * metersPerPixel;
+}
+
+function buildShakeEventCirclePolygon(lon, lat, radiusMeters, steps = 40) {
+  const latRad = lat * Math.PI / 180;
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.max(0.000001, Math.cos(latRad));
+  const coords = [];
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * 2 * Math.PI;
+    const dx = radiusMeters * Math.cos(angle);
+    const dy = radiusMeters * Math.sin(angle);
+    coords.push([lon + dx / metersPerDegLon, lat + dy / metersPerDegLat]);
+  }
+  return coords;
+}
+
+function buildShakeEventFeatures(shakeEvents, zoom) {
+  return shakeEvents.map(e => {
+    const pixelRadius = 16 + e.level * 8;
+    const radiusMeters = shakeEventPixelRadiusToMeters(pixelRadius, e.centerLat, zoom);
+    return {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [buildShakeEventCirclePolygon(e.centerLon, e.centerLat, radiusMeters)],
+      },
+      properties: { id: e.id, level: e.level, confirmed: e.confirmed },
+    };
+  });
+}
+
+/* ─────────────────────────────────────────────────────
    MAP CANVAS — MapLibre GL JS(描画エンジン) + ローカルGeoJSON(データ)
    世界(world.json)・都道府県(prefectures.json)をベクターとして描画する。
    外部タイル・外部スタイルサーバーには依存しない。
@@ -1543,34 +1587,32 @@ function MapCanvas({
           // 揺れ検知(shakeDetection.ts / ShakeDetectionEngine)で検出したイベントの
           // 範囲を、観測点の下地として塗りつぶし円で表示する。観測点のドット自体は
           // この上に重なるよう、realtime-points-layerより先に追加しておく。
+          // circle-radius(ピクセル指定)だとズームでサイズが変わって見える問題が
+          // 解消しなかったため、実座標の円ポリゴンを自前で組み立てるfill+line方式
+          // にしている(buildShakeEventFeatures参照。ズーム変更時に再計算する)。
           map.addSource("shake-events", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [] },
           });
           map.addLayer({
             id: "shake-events-layer",
-            type: "circle",
+            type: "fill",
             source: "shake-events",
             layout: { visibility: "none" },
             paint: {
-              // ズームに依存させず、検知イベントのレベル(0〜4)だけで大きさを
-              // 決める(観測点マーカーと違い、対象は揺れの「範囲」であって
-              // 特定の地物ではないため)。単純な定数式だと環境によってはズームで
-              // サイズが変わって見えることがあったため、zoom 0と22で全く同じ値を
-              // 返す interpolate にして、確実にズーム非依存(画面上で常に同じ
-              // ピクセルサイズ)になるようにしている。
-              "circle-radius": [
-                "interpolate", ["linear"], ["zoom"],
-                0, ["+", 16, ["*", ["get", "level"], 8]],
-                22, ["+", 16, ["*", ["get", "level"], 8]],
-              ],
-              "circle-pitch-scale": "viewport",
-              "circle-pitch-alignment": "viewport",
-              "circle-color": "#FFC107",
-              "circle-opacity": ["case", ["get", "confirmed"], 0.22, 0.10],
-              "circle-stroke-width": ["case", ["get", "confirmed"], 2, 1],
-              "circle-stroke-color": "#FFC107",
-              "circle-stroke-opacity": ["case", ["get", "confirmed"], 0.9, 0.45],
+              "fill-color": "#FFC107",
+              "fill-opacity": ["case", ["get", "confirmed"], 0.22, 0.10],
+            },
+          });
+          map.addLayer({
+            id: "shake-events-outline-layer",
+            type: "line",
+            source: "shake-events",
+            layout: { visibility: "none" },
+            paint: {
+              "line-color": "#FFC107",
+              "line-width": ["case", ["get", "confirmed"], 2, 1],
+              "line-opacity": ["case", ["get", "confirmed"], 0.9, 0.45],
             },
           });
 
@@ -1850,6 +1892,13 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
+    if (map.getLayer("shake-events-outline-layer")) {
+      map.setLayoutProperty(
+        "shake-events-outline-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
   }, [showRealtimeMapLayers, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
@@ -1862,6 +1911,10 @@ function MapCanvas({
   // 保持しているため、tickのたびに作り直すと検知が働かなくなる)。
   const shakeEngineRef = useRef(null);
   if (!shakeEngineRef.current) shakeEngineRef.current = new ShakeDetectionEngine();
+
+  // 揺れ検知イベントの直近の検出結果。ズーム変更時、検知エンジンのtickとは
+  // 独立に円ポリゴンだけを再投影するために参照する(下のuseEffect)。
+  const lastShakeEventsRef = useRef([]);
 
   // 観測点マスタ(緯度経度)が揃ったら、近傍点リストを再計算する。
   // 観測点の位置は基本的に変わらないため、realtimeStations自体の参照が
@@ -1946,19 +1999,34 @@ function MapCanvas({
     const shakeEvents = shakeDetectionEnabled
       ? shakeEngineRef.current.processTick(realtimeValues, Date.now())
       : [];
+    lastShakeEventsRef.current = shakeEvents;
     const shakeSource = map.getSource("shake-events");
     if (shakeSource) {
       shakeSource.setData({
         type: "FeatureCollection",
-        features: shakeEvents.map(e => ({
-          type: "Feature",
-          geometry: { type: "Point", coordinates: [e.centerLon, e.centerLat] },
-          properties: { id: e.id, level: e.level, confirmed: e.confirmed },
-        })),
+        features: buildShakeEventFeatures(shakeEvents, map.getZoom()),
       });
     }
     onShakeEventsChangeRef.current?.(shakeEvents);
   }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled]);
+
+  // ズーム操作のたびに、直前に検出したイベント一覧(lastShakeEventsRef)を
+  // 現在のズームで円ポリゴンに組み直す。データ自体(shakeEvents)は変わって
+  // いないので、揺れ検知エンジンのtickとは独立に、見た目の再投影だけを行う。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+    const handleZoom = () => {
+      const shakeSource = map.getSource("shake-events");
+      if (!shakeSource || lastShakeEventsRef.current.length === 0) return;
+      shakeSource.setData({
+        type: "FeatureCollection",
+        features: buildShakeEventFeatures(lastShakeEventsRef.current, map.getZoom()),
+      });
+    };
+    map.on("zoom", handleZoom);
+    return () => map.off("zoom", handleZoom);
+  }, [status]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
