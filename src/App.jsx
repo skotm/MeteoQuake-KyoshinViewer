@@ -14,7 +14,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.6";
+const APP_VERSION = "0.4.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1555,11 +1555,15 @@ function MapCanvas({
             paint: {
               // ズームに依存させず、検知イベントのレベル(0〜4)だけで大きさを
               // 決める(観測点マーカーと違い、対象は揺れの「範囲」であって
-              // 特定の地物ではないため)。circle-pitch-scaleを明示的に
-              // "viewport"にしないと、既定の"map"(地面に投影する scale)の
-              // ままだとズームに応じて見た目のサイズが変わってしまうため、
-              // 画面基準の固定サイズになるようにしている。
-              "circle-radius": ["+", 16, ["*", ["get", "level"], 8]],
+              // 特定の地物ではないため)。単純な定数式だと環境によってはズームで
+              // サイズが変わって見えることがあったため、zoom 0と22で全く同じ値を
+              // 返す interpolate にして、確実にズーム非依存(画面上で常に同じ
+              // ピクセルサイズ)になるようにしている。
+              "circle-radius": [
+                "interpolate", ["linear"], ["zoom"],
+                0, ["+", 16, ["*", ["get", "level"], 8]],
+                22, ["+", 16, ["*", ["get", "level"], 8]],
+              ],
               "circle-pitch-scale": "viewport",
               "circle-pitch-alignment": "viewport",
               "circle-color": "#FFC107",
