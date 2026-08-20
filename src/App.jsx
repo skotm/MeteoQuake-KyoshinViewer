@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
 import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY } from "./shindoColorScale";
 import { ShakeDetectionEngine } from "./shakeDetection";
+import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from "./shakeTestSimulation";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -13,7 +14,7 @@ import { ShakeDetectionEngine } from "./shakeDetection";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -993,6 +994,7 @@ function MapCanvas({
   eews = [],
   eewEpicenterPickActive = false, onPickEewEpicenter,
   quakeEpicenterPickActive = false, onPickQuakeEpicenter,
+  shakeTestEpicenterPickActive = false, onPickShakeTestEpicenter,
   eewDetailOpen = false,
   showRealtimeMapLayers = false,
   realtimeStations = [],
@@ -1062,6 +1064,10 @@ function MapCanvas({
   quakeEpicenterPickActiveRef.current = quakeEpicenterPickActive;
   const onPickQuakeEpicenterRef = useRef(onPickQuakeEpicenter);
   onPickQuakeEpicenterRef.current = onPickQuakeEpicenter;
+  const shakeTestEpicenterPickActiveRef = useRef(shakeTestEpicenterPickActive);
+  shakeTestEpicenterPickActiveRef.current = shakeTestEpicenterPickActive;
+  const onPickShakeTestEpicenterRef = useRef(onPickShakeTestEpicenter);
+  onPickShakeTestEpicenterRef.current = onPickShakeTestEpicenter;
   // 震央地名データは、緊急地震速報テスト配信のピックモードが最初にONになった時だけ
   // 遅延読み込みする(実験的機能なので、使わないユーザーには一切通信させない)。
   const epicenterNamesGeoDataRef = useRef(null);
@@ -1690,6 +1696,27 @@ function MapCanvas({
             }
           });
 
+          // 地震検知テスト(実験的機能)「地図をタップして震源を指定」モード用。
+          // EEW・地震情報の震源ピックと全く同じ処理を、行き先だけ変えて共有する。
+          map.on("click", (e) => {
+            if (!shakeTestEpicenterPickActiveRef.current) return;
+            const { lat, lng } = e.lngLat;
+            const geo = epicenterNamesGeoDataRef.current;
+            if (geo) {
+              const name = findEpicenterNameByPoint(geo, lat, lng);
+              onPickShakeTestEpicenterRef.current?.(lat, lng, name);
+            } else {
+              loadEpicenterNamesData().then((loaded) => {
+                epicenterNamesGeoDataRef.current = loaded;
+                const name = findEpicenterNameByPoint(loaded, lat, lng);
+                onPickShakeTestEpicenterRef.current?.(lat, lng, name);
+              }).catch((err) => {
+                console.error("震央地名データの読み込みに失敗しました:", err);
+                onPickShakeTestEpicenterRef.current?.(lat, lng, null);
+              });
+            }
+          });
+
           // 緊急地震速報(EEW)の地域ごとの予測震度塗りつぶしは、専用レイヤーは
           // 持たず、地震情報の震度分布と同じ"areas"ソース/"areas-intensity-fill"・
           // "areas-intensity-line"レイヤー(feature-state)を共用する(下のuseEffectで
@@ -2167,9 +2194,9 @@ function MapCanvas({
     const map = mapRef.current;
     if (!map || status !== "ready") return;
 
-    map.getCanvas().style.cursor = (tsunamiAreaPickActive || eewEpicenterPickActive || quakeEpicenterPickActive) ? "crosshair" : "";
+    map.getCanvas().style.cursor = (tsunamiAreaPickActive || eewEpicenterPickActive || quakeEpicenterPickActive || shakeTestEpicenterPickActive) ? "crosshair" : "";
 
-    if ((eewEpicenterPickActive || quakeEpicenterPickActive) && !epicenterNamesLoadedRef.current) {
+    if ((eewEpicenterPickActive || quakeEpicenterPickActive || shakeTestEpicenterPickActive) && !epicenterNamesLoadedRef.current) {
       epicenterNamesLoadedRef.current = true;
       loadEpicenterNamesData()
         .then((geojson) => { epicenterNamesGeoDataRef.current = geojson; })
@@ -2178,7 +2205,7 @@ function MapCanvas({
           epicenterNamesLoadedRef.current = false; // 失敗時は次回ONで再試行できるようにする
         });
     }
-  }, [eewEpicenterPickActive, quakeEpicenterPickActive, tsunamiAreaPickActive, status]);
+  }, [eewEpicenterPickActive, quakeEpicenterPickActive, shakeTestEpicenterPickActive, tsunamiAreaPickActive, status]);
 
   // ピックモードで選ばれている予報区(pickedTsunamiAreas、複数・グレード別可)を、
   // それぞれの実際の配色で強調レイヤーに反映する。buildTsunamiAreaColorExprは
@@ -7752,6 +7779,7 @@ function BottomDock({
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
+  shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
   eews = EMPTY_EQDB_LIST, eewDetailOpen, eewOpenSignal, onOpenEewDetail, onCloseEewDetail,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
   onRemoveTsunamiAreaPick, onCycleTsunamiAreaGrade,
@@ -9327,6 +9355,10 @@ function BottomDock({
                   quakeTestForm={quakeTestForm}
                   quakeEpicenterPickActive={quakeEpicenterPickActive}
                   quakeTestAutoPlaying={quakeTestAutoPlaying}
+                  shakeTest={shakeTest}
+                  onShakeTestAction={onShakeTestAction}
+                  shakeTestForm={shakeTestForm}
+                  shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
                   tsunamiAreaPickActive={tsunamiAreaPickActive}
                   onStartTsunamiAreaPick={onStartTsunamiAreaPick}
                   pickedTsunamiAreas={pickedTsunamiAreas}
@@ -12586,6 +12618,149 @@ function QuakeTestBroadcastPanel({ testQuake, onAction, quakeTestForm, quakeEpic
   );
 }
 
+/* ─────────────────────────────────────────────────────
+   SHAKE DETECTION TEST PANEL — 実験的機能の1つ。
+   揺れ検知エンジン(shakeDetection.ts)の動作確認用に、震源(地図タップ)・
+   深さ・Mを指定して仮想的な揺れを発生させる。QuakeTestBroadcastPanelと
+   同じUIパターン(震源ピック・SettingsCardでの入力欄)を踏襲している。
+   ───────────────────────────────────────────────────── */
+function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTestEpicenterPickActive }) {
+  const { tokens } = useContext(ThemeContext);
+  const f = shakeTestForm;
+  const running = !!shakeTest;
+
+  const inputStyle = {
+    width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
+    background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
+    fontSize: 13, fontWeight: 600, boxSizing: "border-box",
+  };
+  const labelStyle = {
+    display: "block", fontSize: 11, fontWeight: 600,
+    color: `rgba(${tokens.ink},0.5)`, marginBottom: 4,
+  };
+  function patchForm(patch) {
+    onAction?.("patchForm", patch);
+  }
+
+  return (
+    <>
+      <div style={{ margin: "-4px 14px 10px", fontSize: 11, color: `rgba(${tokens.ink},0.45)`, lineHeight: 1.7 }}>
+        実際の地震ではない、揺れ検知エンジンの動作確認用のシミュレーションです。
+        震源・M・深さから観測点ごとのP波/S波到達時刻とピーク震度を計算し、
+        実際のリアルタイム震度データと同じ形で観測点に反映します
+        (地盤増幅・断層破壊伝播・指向性は簡略化のため考慮していません)。
+      </div>
+
+      <div style={{ margin: "18px 14px 6px" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: `rgba(${tokens.ink},0.7)` }}>
+          震源
+        </span>
+      </div>
+      <SettingsCard>
+        <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            <label style={labelStyle}>震源</label>
+            <PressableButton
+              type="button"
+              onClick={() => onAction?.(shakeTestEpicenterPickActive ? "cancelEpicenterPick" : "startEpicenterPick")}
+              disabled={running}
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8, border: "none", cursor: running ? "default" : "pointer",
+                textAlign: "left",
+                background: shakeTestEpicenterPickActive ? "rgba(255,69,58,0.18)" : `rgba(${tokens.ink},0.08)`,
+                color: shakeTestEpicenterPickActive ? "#FF453A" : tokens.text,
+                opacity: running ? 0.5 : 1,
+              }}
+            >
+              {shakeTestEpicenterPickActive ? (
+                <span style={{ fontSize: 13, fontWeight: 700 }}>地図をタップして震源を指定してください…</span>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{f.place || "(震源未指定)"}</div>
+                  <div style={{ fontSize: 11, color: `rgba(${tokens.ink},0.55)`, marginTop: 2 }}>
+                    北緯{f.latitude?.toFixed?.(2) ?? "-.--"}° ・ 東経{f.longitude?.toFixed?.(2) ?? "-.--"}° ・ タップして地図で選び直す
+                  </div>
+                </div>
+              )}
+            </PressableButton>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={labelStyle}>深さ(km)</label>
+              <select
+                value={f.depth}
+                onChange={e => patchForm({ depth: parseFloat(e.target.value) })}
+                disabled={running}
+                style={inputStyle}
+              >
+                {EEW_TEST_DEPTH_OPTIONS.map(d => (
+                  <option key={d} value={d}>{d}km</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <label style={labelStyle}>M(マグニチュード)</label>
+              <select
+                value={f.magnitude}
+                onChange={e => patchForm({ magnitude: parseFloat(e.target.value) })}
+                disabled={running}
+                style={inputStyle}
+              >
+                {EEW_TEST_MAGNITUDE_OPTIONS.map(m => (
+                  <option key={m} value={m}>{m.toFixed(1)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      </SettingsCard>
+
+      <SettingsCard>
+        <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          {running ? (
+            <PressableButton
+              type="button"
+              onClick={() => onAction?.("stop")}
+              style={{
+                width: "100%", padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+                background: "rgba(255,69,58,0.16)", color: "#FF453A",
+                fontSize: 13, fontWeight: 700, textAlign: "center",
+              }}
+            >
+              シミュレーションを停止
+            </PressableButton>
+          ) : (
+            <PressableButton
+              type="button"
+              onClick={() => onAction?.("start")}
+              disabled={f.latitude == null || f.longitude == null}
+              style={{
+                width: "100%", padding: "10px 14px", borderRadius: 10, border: "none",
+                cursor: (f.latitude == null || f.longitude == null) ? "default" : "pointer",
+                background: "rgba(48,209,88,0.16)", color: "#30D158",
+                fontSize: 13, fontWeight: 700, textAlign: "center",
+                opacity: (f.latitude == null || f.longitude == null) ? 0.5 : 1,
+              }}
+            >
+              地震を発生させる
+            </PressableButton>
+          )}
+          <div style={{ fontSize: 11, color: `rgba(${tokens.ink},0.45)`, lineHeight: 1.6 }}>
+            発生させると、震源に近い観測点から順にP波→S波が到達し、震度が立ち上がって
+            から徐々に収まっていきます。全観測点の揺れが収まると自動的に終了します。
+          </div>
+        </div>
+      </SettingsCard>
+
+      {running && (
+        <div style={{ margin: "6px 14px 10px", fontSize: 11, color: `rgba(${tokens.ink},0.5)`, lineHeight: 1.7 }}>
+          シミュレーション実行中: {shakeTest.form.place}・M{shakeTest.form.magnitude.toFixed(1)}・深さ{shakeTest.form.depth}km
+        </div>
+      )}
+    </>
+  );
+}
+
 function TsunamiTestBroadcastPanel({
   testTsunami, onBroadcast, onCancel, onClear,
   tsunamiAreaPickActive, onStartAreaPick, pickedAreas = [], onRemoveAreaPick, onCycleAreaGrade,
@@ -13466,6 +13641,7 @@ function SettingsBody({
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
+  shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
   onRemoveTsunamiAreaPick, onCycleTsunamiAreaGrade,
   pickedTsunamiHeights, onChangeTsunamiHeightPick, onRemoveTsunamiHeightPick,
@@ -13489,7 +13665,7 @@ function SettingsBody({
   useEffect(() => {
     if (
       path.length >= 2 &&
-      (path[path.length - 1] === "tsunamiTestBroadcast" || path[path.length - 1] === "eewTestBroadcast" || path[path.length - 1] === "quakeTestBroadcast") &&
+      (path[path.length - 1] === "tsunamiTestBroadcast" || path[path.length - 1] === "eewTestBroadcast" || path[path.length - 1] === "quakeTestBroadcast" || path[path.length - 1] === "shakeDetectionTest") &&
       path[path.length - 2] === "experimental" &&
       !experimentalFeaturesEnabled
     ) {
@@ -13803,6 +13979,11 @@ function SettingsBody({
               label="地震情報テスト配信"
               onClick={() => onNavigate([...path, "quakeTestBroadcast"])}
             />
+            <SettingsCardDivider/>
+            <SettingsMenuRow
+              label="地震検知テスト"
+              onClick={() => onNavigate([...path, "shakeDetectionTest"])}
+            />
           </SettingsCard>
         )}
       </>
@@ -13865,6 +14046,22 @@ function SettingsBody({
           quakeTestForm={quakeTestForm}
           quakeEpicenterPickActive={quakeEpicenterPickActive}
           quakeTestAutoPlaying={quakeTestAutoPlaying}
+        />
+      </>
+    );
+  }
+
+  // 実験的機能: 地震検知テスト。
+  if (category === "advanced" && leaf === "experimental" && sub === "shakeDetectionTest") {
+    if (!experimentalFeaturesEnabled) return null;
+    return (
+      <>
+        <SettingsHeader title="地震検知テスト"/>
+        <ShakeDetectionTestPanel
+          shakeTest={shakeTest}
+          onAction={onShakeTestAction}
+          shakeTestForm={shakeTestForm}
+          shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
         />
       </>
     );
@@ -14206,6 +14403,9 @@ export default function App() {
       clearTestTsunami();
       setTsunamiAreaPickActive(false);
       setPickedTsunamiAreas([]);
+      // 地震検知テストのシミュレーションも同様に片付ける。
+      setShakeTest(null);
+      setShakeTestEpicenterPickActive(false);
     }
   }
 
@@ -14699,6 +14899,112 @@ export default function App() {
     }));
     setQuakeEpicenterPickActive(false);
   }
+
+  /* ─────────────────────────────────────────────────────
+     実験的機能: 地震検知テスト
+     揺れ検知エンジン(shakeDetection.ts)の動作確認用に、実際の地震を待たずに
+     震源・M・深さを指定して仮想的な揺れを発生させる。EEW・地震情報のテスト
+     配信と同じ考え方で、地図タップによる震源指定(shakeTestEpicenterPickActive)
+     を持つ。
+     配信中のダミー地震(quakes)を差し込むテストとは異なり、こちらは観測点
+     ごとのリアルタイム震度値(realtimeValues)を差し込む必要があるため、
+     shakeTestSimulation.tsで事前計算した到達時刻・ピーク震度(perStation)を
+     元に、tickごとの経過時間から現在値を計算して合成する(下のuseEffect)。
+     ───────────────────────────────────────────────────── */
+  function defaultShakeTestForm() {
+    return {
+      place: "テスト震源(相模湾)",
+      latitude: 35.2,
+      longitude: 139.3,
+      depth: 20,
+      magnitude: 5.8,
+    };
+  }
+  const [shakeTestForm, setShakeTestForm] = useState(defaultShakeTestForm);
+  const [shakeTestEpicenterPickActive, setShakeTestEpicenterPickActive] = useState(false);
+  // 実行中のシミュレーション本体。null = 実行していない。
+  const [shakeTest, setShakeTest] = useState(null); // { startedAt, perStation, form }
+  // shakeTest実行中に一定間隔で値を再計算させるための、ただのカウンタ。
+  const [shakeTestTick, setShakeTestTick] = useState(0);
+
+  function handleShakeTestAction(action, payload) {
+    if (action === "patchForm") {
+      setShakeTestForm(prev => ({ ...prev, ...payload }));
+      return;
+    }
+    if (action === "startEpicenterPick") {
+      setShakeTestEpicenterPickActive(true);
+      return;
+    }
+    if (action === "cancelEpicenterPick") {
+      setShakeTestEpicenterPickActive(false);
+      return;
+    }
+    if (action === "resetForm") {
+      setShakeTestForm(defaultShakeTestForm());
+      return;
+    }
+    if (action === "start") {
+      if (shakeTestForm.latitude == null || shakeTestForm.longitude == null) return;
+      if (realtimeStream.stations.length === 0) return;
+      const perStation = prepareShakeTest(
+        {
+          lat: shakeTestForm.latitude,
+          lon: shakeTestForm.longitude,
+          magnitude: shakeTestForm.magnitude,
+          depth: shakeTestForm.depth,
+        },
+        realtimeStream.stations
+      );
+      setShakeTest({ startedAt: Date.now(), perStation, form: shakeTestForm });
+      return;
+    }
+    if (action === "stop") {
+      setShakeTest(null);
+      return;
+    }
+  }
+
+  function handlePickShakeTestEpicenter(lat, lon, placeName) {
+    setShakeTestForm(prev => ({
+      ...prev,
+      latitude: lat,
+      longitude: lon,
+      place: placeName || `テスト震源(北緯${lat.toFixed(2)}度 東経${lon.toFixed(2)}度)`,
+    }));
+    setShakeTestEpicenterPickActive(false);
+  }
+
+  // シミュレーション実行中は、本物のWebSocket更新(realtimeStream.values)とは
+  // 独立して500msごとに値を再計算する必要があるため、専用のタイマーで
+  // shakeTestTickを回す。全観測点が平常値近くまで減衰し終えたら自動的に
+  // 停止する。
+  useEffect(() => {
+    if (!shakeTest) return;
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - shakeTest.startedAt;
+      if (isShakeTestFinished(shakeTest.perStation, elapsed)) {
+        setShakeTest(null);
+      } else {
+        setShakeTestTick(t => t + 1);
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [shakeTest]);
+
+  // MapCanvas(地図描画・揺れ検知エンジンの両方)へ渡す実質的なrealtimeValues。
+  // シミュレーション実行中は、本物のデータに観測点ごとのシミュレーション値を
+  // 上書き合成する。検知エンジン側からは本物のデータと区別が付かない。
+  const effectiveRealtimeValues = useMemo(() => {
+    if (!shakeTest) return realtimeStream.values;
+    const elapsed = Date.now() - shakeTest.startedAt;
+    const overlay = computeShakeTestValues(shakeTest.perStation, elapsed);
+    if (overlay.size === 0) return realtimeStream.values;
+    const merged = new Map(realtimeStream.values);
+    for (const [id, v] of overlay) merged.set(id, v);
+    return merged;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realtimeStream.values, shakeTest, shakeTestTick]);
 
   // テスト配信中は、実際の一覧の先頭にテストデータを合成する。地震タブに関する
   // App側の判定(一覧・選択中の地震・地図表示)は、以降すべてこちらを使う。
@@ -16003,10 +16309,12 @@ export default function App() {
           onPickEewEpicenter={handlePickEewEpicenter}
           quakeEpicenterPickActive={quakeEpicenterPickActive}
           onPickQuakeEpicenter={handlePickQuakeEpicenter}
+          shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
+          onPickShakeTestEpicenter={handlePickShakeTestEpicenter}
           eewDetailOpen={eewMapLegendVisible}
           showRealtimeMapLayers={showRealtimeMapLayers}
           realtimeStations={realtimeStream.stations}
-          realtimeValues={realtimeStream.values}
+          realtimeValues={effectiveRealtimeValues}
           realtimeIntensityThreshold={realtimeIntensityThreshold}
           realtimeRisingEnabled={realtimeRisingEnabled}
           shakeDetectionEnabled={shakeDetectionEnabled}
@@ -16124,6 +16432,74 @@ export default function App() {
                 }}
               >
                 キャンセル
+              </PressableButton>
+            </Glass>
+          </div>
+        )}
+
+        {/* 地震検知テスト「地図をタップして震源を指定」中のバナー。EEWの震源ピックと同じ構成。 */}
+        {shakeTestEpicenterPickActive && (
+          <div style={{
+            position: "absolute",
+            top: "calc(16px + env(safe-area-inset-top))",
+            left: 0, right: 0,
+            display: "flex", justifyContent: "center",
+            zIndex: 30, padding: "0 16px",
+          }}>
+            <Glass radius={22} style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "10px 12px",
+              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text }}>
+                地図をタップして震源を指定(地震検知テスト)
+              </span>
+              <PressableButton
+                type="button"
+                onClick={() => handleShakeTestAction("cancelEpicenterPick")}
+                style={{
+                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
+                  background: `rgba(${themeContextValue.tokens.ink},0.08)`,
+                  fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
+                }}
+              >
+                キャンセル
+              </PressableButton>
+            </Glass>
+          </div>
+        )}
+
+        {/* 地震検知テストのシミュレーション実行中バナー — 実データと混同しないよう、
+            どのタブを見ていても常に分かるように画面上部中央に出す。 */}
+        {shakeTest && (
+          <div style={{
+            position: "absolute",
+            top: "calc(16px + env(safe-area-inset-top))",
+            left: 0, right: 0,
+            display: "flex", justifyContent: "center",
+            zIndex: 30, padding: "0 16px",
+            pointerEvents: "none",
+          }}>
+            <Glass radius={22} tintColor="#FF9F0A" style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "8px 8px 8px 14px",
+              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
+              pointerEvents: "auto",
+            }}>
+              <span style={{ position: "relative", zIndex: 1, fontSize: 12.5, fontWeight: 700, color: "#FF9F0A" }}>
+                ⚠️ 地震検知テスト実行中(実際の地震ではありません)
+              </span>
+              <PressableButton
+                type="button"
+                onClick={() => handleShakeTestAction("stop")}
+                style={{
+                  position: "relative", zIndex: 1,
+                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
+                  background: "rgba(255,159,10,0.22)",
+                  fontSize: 12, fontWeight: 700, color: "#FF9F0A",
+                }}
+              >
+                停止
               </PressableButton>
             </Glass>
           </div>
@@ -16294,6 +16670,10 @@ export default function App() {
                   quakeTestForm={quakeTestForm}
                   quakeEpicenterPickActive={quakeEpicenterPickActive}
                   quakeTestAutoPlaying={quakeTestAutoPlaying}
+                  shakeTest={shakeTest}
+                  onShakeTestAction={handleShakeTestAction}
+                  shakeTestForm={shakeTestForm}
+                  shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
                   tsunamiAreaPickActive={tsunamiAreaPickActive}
                   onStartTsunamiAreaPick={startTsunamiAreaPick}
                   pickedTsunamiAreas={pickedTsunamiAreas}
@@ -16396,6 +16776,10 @@ export default function App() {
               quakeTestForm={quakeTestForm}
               quakeEpicenterPickActive={quakeEpicenterPickActive}
               quakeTestAutoPlaying={quakeTestAutoPlaying}
+              shakeTest={shakeTest}
+              onShakeTestAction={handleShakeTestAction}
+              shakeTestForm={shakeTestForm}
+              shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
               tsunamiAreaPickActive={tsunamiAreaPickActive}
               onStartTsunamiAreaPick={startTsunamiAreaPick}
               pickedTsunamiAreas={pickedTsunamiAreas}
