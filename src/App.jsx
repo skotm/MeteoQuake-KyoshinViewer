@@ -14,7 +14,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.8";
+const APP_VERSION = "0.4.9";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -990,8 +990,23 @@ function tsunamiStationIconId(map, color, heightM, dotDiameterPx, barWidthPx, ge
 // ようにするため。以前はピクセル基準の半径をズームから逆算していたが、それだと
 // 画面上で常に同じピクセルサイズになってしまい、地図に対しては拡大縮小のたびに
 // 大きさが変わって見えていた。
-const SHAKE_EVENT_BASE_RADIUS_METERS = 6000;      // level 0 の半径
+const SHAKE_EVENT_BASE_RADIUS_METERS = 6000;      // level 0・単一観測点の最小半径
 const SHAKE_EVENT_RADIUS_PER_LEVEL_METERS = 4000; // levelが1上がるごとに広がる分
+const SHAKE_EVENT_RADIUS_PADDING_METERS = 4000;   // 観測点の広がりを覆う円に足す余白
+
+// イベントの観測点バウンディングボックス(minLat/maxLat/minLon/maxLon)の
+// 中心から対角線までの距離(メートル)。イベントがマージされて範囲が
+// 広がるほどこの値も大きくなるので、円の半径に反映すれば「マージしたら
+// エフェクトの円もその分大きくなる」動きになる。
+function shakeEventBoundingRadiusMeters(e) {
+  if (e.minLat == null || e.maxLat == null || e.minLon == null || e.maxLon == null) return 0;
+  const latRad = e.centerLat * Math.PI / 180;
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.max(0.000001, Math.cos(latRad));
+  const dLatMeters = (e.maxLat - e.minLat) * metersPerDegLat / 2;
+  const dLonMeters = (e.maxLon - e.minLon) * metersPerDegLon / 2;
+  return Math.sqrt(dLatMeters * dLatMeters + dLonMeters * dLonMeters);
+}
 
 function buildShakeEventCirclePolygon(lon, lat, radiusMeters, steps = 40) {
   const latRad = lat * Math.PI / 180;
@@ -1009,7 +1024,11 @@ function buildShakeEventCirclePolygon(lon, lat, radiusMeters, steps = 40) {
 
 function buildShakeEventFeatures(shakeEvents) {
   return shakeEvents.map(e => {
-    const radiusMeters = SHAKE_EVENT_BASE_RADIUS_METERS + e.level * SHAKE_EVENT_RADIUS_PER_LEVEL_METERS;
+    const levelBaseRadius = SHAKE_EVENT_BASE_RADIUS_METERS + e.level * SHAKE_EVENT_RADIUS_PER_LEVEL_METERS;
+    const boundingRadius = shakeEventBoundingRadiusMeters(e) + SHAKE_EVENT_RADIUS_PADDING_METERS;
+    // levelなりの最低限の大きさは保ちつつ、マージ等で観測点の広がりが
+    // それを上回ったら、広がりを覆えるところまで円を大きくする。
+    const radiusMeters = Math.max(levelBaseRadius, boundingRadius);
     return {
       type: "Feature",
       geometry: {
