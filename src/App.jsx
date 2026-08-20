@@ -14,7 +14,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.4";
+const APP_VERSION = "0.4.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1555,8 +1555,13 @@ function MapCanvas({
             paint: {
               // ズームに依存させず、検知イベントのレベル(0〜4)だけで大きさを
               // 決める(観測点マーカーと違い、対象は揺れの「範囲」であって
-              // 特定の地物ではないため)。
+              // 特定の地物ではないため)。circle-pitch-scaleを明示的に
+              // "viewport"にしないと、既定の"map"(地面に投影する scale)の
+              // ままだとズームに応じて見た目のサイズが変わってしまうため、
+              // 画面基準の固定サイズになるようにしている。
               "circle-radius": ["+", 16, ["*", ["get", "level"], 8]],
+              "circle-pitch-scale": "viewport",
+              "circle-pitch-alignment": "viewport",
               "circle-color": "#FFC107",
               "circle-opacity": ["case", ["get", "confirmed"], 0.22, 0.10],
               "circle-stroke-width": ["case", ["get", "confirmed"], 2, 1],
