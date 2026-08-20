@@ -14,7 +14,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.5";
+const APP_VERSION = "0.4.6";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
