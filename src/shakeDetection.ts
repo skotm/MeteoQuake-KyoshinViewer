@@ -51,6 +51,12 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   pendingExpireTicks: 3,       // 単独で急上昇した点が、これだけtickが経っても
                                 // どの近傍からも裏付けを得られなければ静かに諦める
 
+  // 面的拡張(BFS)。裏付けが取れて確定した点を核に、そこから緩い基準で
+  // 近傍へ広げる(eq_detection.jsの「核は厳しく・拡張は緩く」を参考)。
+  propagationRiseThreshold: 0.15, // これ以上の上昇があれば、単独では検知の
+                                   // 裏付けにならなくても既存イベントへの
+                                   // 取り込み(拡張)は許可する
+
   // 震度相当値(連続値) → イベントレベル(0〜4)への割り当て。
   // 4つのしきい値でレベル1〜4を区切る(この値未満はレベル0)。
   levelThresholds: [0.5, 2.0, 3.5, 5.0],
@@ -303,7 +309,34 @@ export class ShakeDetectionEngine {
       }
     }
 
-    // 5) 領域が近い(または重なる)イベント同士の統合。1回のtickで広範囲に
+    // 5) 確定した揺れの周辺への面的な拡張(BFS)。2点同時多発の裏付けが
+    //    取れた点(イベントの核)を起点に、単独では検知の裏付けにならない
+    //    程度の弱い上昇(propagationRiseThreshold)でも、既存イベントの
+    //    近傍であればそのまま同じイベントに取り込んでいく。これにより、
+    //    核から面として自然に広がり、検知エリアがまだらに欠けるのを防ぐ
+    //    (eq_detection.jsのexpandDetectedAreaの考え方を移植)。
+    const propagationQueue = [];
+    for (const point of points.values()) {
+      if (point.eventId != null) propagationQueue.push(point.id);
+    }
+    let qi = 0;
+    while (qi < propagationQueue.length) {
+      const current = points.get(propagationQueue[qi++]);
+      const event = this.events.get(current.eventId);
+      if (!event) continue;
+      for (const np of current.nearPoints) {
+        const neighbor = points.get(np.id);
+        if (!neighbor || neighbor.eventId != null) continue;
+        if (neighbor.latestIntensity == null) continue;
+        if (neighbor.intensityDiff < params.propagationRiseThreshold) continue;
+        const level = intensityToShakeLevel(neighbor.latestIntensity, params.levelThresholds);
+        addPointToEvent(event, neighbor, level, now, params);
+        neighbor.pendingSince = null;
+        propagationQueue.push(neighbor.id);
+      }
+    }
+
+    // 6) 領域が近い(または重なる)イベント同士の統合。1回のtickで広範囲に
     //    同時多発したイベント群が、小さなイベントのまま乱立しないよう、
     //    「これ以上統合できるペアが無くなるまで」繰り返す(連鎖的な統合)。
     let merged = true;
@@ -325,7 +358,7 @@ export class ShakeDetectionEngine {
       }
     }
 
-    // 6) 期限切れイベントの削除
+    // 7) 期限切れイベントの削除
     for (const [id, event] of this.events) {
       if (event.expireAt < now) this.events.delete(id);
     }
