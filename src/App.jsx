@@ -14,7 +14,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.3";
+const APP_VERSION = "0.4.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -14976,9 +14976,9 @@ export default function App() {
   }
 
   // シミュレーション実行中は、本物のWebSocket更新(realtimeStream.values)とは
-  // 独立して500msごとに値を再計算する必要があるため、専用のタイマーで
-  // shakeTestTickを回す。全観測点が平常値近くまで減衰し終えたら自動的に
-  // 停止する。
+  // 独立して値を再計算する必要があるため、専用のタイマーでshakeTestTickを回す。
+  // 本物のリアルタイムデータの更新間隔(1秒ごと)に合わせている。全観測点が
+  // 平常値近くまで減衰し終えたら自動的に停止する。
   useEffect(() => {
     if (!shakeTest) return;
     const interval = setInterval(() => {
@@ -14988,7 +14988,7 @@ export default function App() {
       } else {
         setShakeTestTick(t => t + 1);
       }
-    }, 500);
+    }, 1000);
     return () => clearInterval(interval);
   }, [shakeTest]);
 
