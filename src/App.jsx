@@ -4,6 +4,7 @@ import { useRealtimeStream } from "./useRealtimeStream";
 import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY } from "./shindoColorScale";
 import { ShakeDetectionEngine } from "./shakeDetection";
 import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from "./shakeTestSimulation";
+import { EpicenterEstimator } from "./epicenterEstimation";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -14,7 +15,7 @@ import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from ".
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.4.9";
+const APP_VERSION = "0.5.0";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1041,6 +1042,52 @@ function buildShakeEventFeatures(shakeEvents) {
 }
 
 /* ─────────────────────────────────────────────────────
+   震源推定(epicenterEstimation.ts / EpicenterEstimator)のマーカー用ヘルパー。
+   揺れ検知イベントごとの推定結果(estimateEpicenter()の戻り値)を、
+   ×印(クロスヘア)のポリライン風Featureに変換する。塗りつぶし円
+   (shake-events-layer)とは別レイヤーにして重ねる。
+   ───────────────────────────────────────────────────── */
+const EPICENTER_MARKER_HALF_SIZE_METERS = 9000; // ×印の腕の長さ(中心から先端まで)
+
+function buildEpicenterCrosshairCoords(lon, lat) {
+  const latRad = lat * Math.PI / 180;
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.max(0.000001, Math.cos(latRad));
+  const dx = EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLon;
+  const dy = EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLat;
+  // ×字を1本のLineStringで表現する(MultiLineStringが使えない簡易描画のため、
+  // 中心へいったん戻ってから反対方向の線を引く)。
+  return [
+    [lon - dx, lat - dy], [lon + dx, lat + dy],
+    [lon, lat],
+    [lon - dx, lat + dy], [lon + dx, lat - dy],
+  ];
+}
+
+// estimates: Map<eventId, estimateEpicenter()の戻り値 | null>
+// 検知点数が少なすぎて推定不能(null)のイベントは表示しない。
+function buildEpicenterEstimateFeatures(estimates) {
+  const features = [];
+  for (const [eventId, est] of estimates) {
+    if (!est) continue;
+    features.push({
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: buildEpicenterCrosshairCoords(est.lon, est.lat),
+      },
+      properties: {
+        eventId,
+        depthKm: Math.round(est.depthKm),
+        pointCount: est.pointCount,
+        errorLevel: est.errorLevel,
+      },
+    });
+  }
+  return features;
+}
+
+/* ─────────────────────────────────────────────────────
    MAP CANVAS — MapLibre GL JS(描画エンジン) + ローカルGeoJSON(データ)
    世界(world.json)・都道府県(prefectures.json)をベクターとして描画する。
    外部タイル・外部スタイルサーバーには依存しない。
@@ -1069,6 +1116,11 @@ function MapCanvas({
   realtimeRisingEnabled = false,
   shakeDetectionEnabled = true,
   onShakeEventsChange,
+  // 震源推定(epicenterEstimation.ts、実験的機能)。デフォルトOFF。
+  // 揺れ検知(shakeDetectionEnabled)自体がOFFの間は、推定に使う揺れ検知
+  // イベントが発生しないため実質的に動作しない。
+  epicenterEstimationEnabled = false,
+  onEpicenterEstimateChange,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -1639,6 +1691,26 @@ function MapCanvas({
             },
           });
 
+          // 震源推定(epicenterEstimation.ts、実験的機能)の×印マーカー。
+          // 検知点数がまだ少ない(=精度が低い)推定は薄く表示し、ある程度
+          // 検知点が揃った推定(confirmed相当。App側のロジックで判定)を
+          // 濃く表示する想定で、pointCountをプロパティに持たせておく。
+          map.addSource("epicenter-estimates", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "epicenter-estimates-layer",
+            type: "line",
+            source: "epicenter-estimates",
+            layout: { visibility: "none", "line-cap": "round" },
+            paint: {
+              "line-color": "#FF3B30",
+              "line-width": 3,
+              "line-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.35, 5, 0.9],
+            },
+          });
+
           // リアルタイムタブ(強震モニタ/S-net)専用の観測点レイヤー。
           // 数千点を毎秒更新する想定のため、station-points-symbolのような
           // スプライトアイコン方式(震度キー別に画像を切り替える方式)ではなく、
@@ -1922,7 +1994,15 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-  }, [showRealtimeMapLayers, status]);
+    // 震源推定マーカーも、強震モニタ本体+震源推定機能自体がONの間だけ出す。
+    if (map.getLayer("epicenter-estimates-layer")) {
+      map.setLayoutProperty(
+        "epicenter-estimates-layer",
+        "visibility",
+        showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
+      );
+    }
+  }, [showRealtimeMapLayers, epicenterEstimationEnabled, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
   // 閾値(realtimeIntensityThreshold)を変えても比較が崩れないよう、表示中/非表示中を
@@ -1938,6 +2018,14 @@ function MapCanvas({
   // 揺れ検知イベントの直近の検出結果。ズーム変更時、検知エンジンのtickとは
   // 独立に円ポリゴンだけを再投影するために参照する(下のuseEffect)。
   const lastShakeEventsRef = useRef([]);
+
+  // 震源推定(epicenterEstimation.ts)本体。ShakeDetectionEngineと同様、
+  // 一度だけ生成して使い回す(イベントごとの推定キャッシュを内部に持つため)。
+  const epicenterEstimatorRef = useRef(null);
+  if (!epicenterEstimatorRef.current) epicenterEstimatorRef.current = new EpicenterEstimator();
+
+  const onEpicenterEstimateChangeRef = useRef(onEpicenterEstimateChange);
+  onEpicenterEstimateChangeRef.current = onEpicenterEstimateChange;
 
   // 観測点マスタ(緯度経度)が揃ったら、近傍点リストを再計算する。
   // 観測点の位置は基本的に変わらないため、realtimeStations自体の参照が
@@ -2031,7 +2119,26 @@ function MapCanvas({
       });
     }
     onShakeEventsChangeRef.current?.(shakeEvents);
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled]);
+
+    // 震源推定(実験的機能)。ShakeDetectionEngine.processTick()とは別の
+    // 重い処理になるため、機能自体がONの間だけ、かつ揺れ検知イベントが
+    // 実際にある時だけ呼ぶ。EpicenterEstimator側で「検知点数(pointCount)が
+    // 変化したイベントだけ再計算する」キャッシュを持っているので、ここでは
+    // 単純に毎tick呼んでよい。
+    if (epicenterEstimationEnabled) {
+      const estimates = shakeEvents.length > 0
+        ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, Date.now())
+        : new Map();
+      const epicenterSource = map.getSource("epicenter-estimates");
+      if (epicenterSource) {
+        epicenterSource.setData({
+          type: "FeatureCollection",
+          features: buildEpicenterEstimateFeatures(estimates),
+        });
+      }
+      onEpicenterEstimateChangeRef.current?.(estimates);
+    }
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -3755,6 +3862,32 @@ function saveShakeDetectionEnabled(enabled) {
     localStorage.setItem(SHAKE_DETECTION_ENABLED_STORAGE_KEY, String(enabled));
   } catch (err) {
     console.warn("地震検知の設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
+   震源推定(epicenterEstimation.ts)自体のON/OFF。実験的機能のため、
+   揺れ検知(shakeDetectionEnabled)とは別にlocalStorageに永続化する。
+   デフォルトはOFF(検証が浅い機能のため、明示的にONにした人だけ使う)。
+   ───────────────────────────────────────────────────── */
+const EPICENTER_ESTIMATION_ENABLED_STORAGE_KEY = "epicenterEstimationEnabled";
+
+function loadStoredEpicenterEstimationEnabled() {
+  try {
+    const saved = localStorage.getItem(EPICENTER_ESTIMATION_ENABLED_STORAGE_KEY);
+    if (saved === "true") return true;
+    if (saved === "false") return false;
+  } catch (err) {
+    console.warn("震源推定の設定を読み込めませんでした:", err);
+  }
+  return false;
+}
+
+function saveEpicenterEstimationEnabled(enabled) {
+  try {
+    localStorage.setItem(EPICENTER_ESTIMATION_ENABLED_STORAGE_KEY, String(enabled));
+  } catch (err) {
+    console.warn("震源推定の設定を保存できませんでした:", err);
   }
 }
 
@@ -7855,6 +7988,7 @@ function BottomDock({
   realtimeApiToken, onChangeRealtimeApiToken,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
+  epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
   shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
@@ -9424,6 +9558,8 @@ function BottomDock({
                   onChangeRealtimeRisingEnabled={onChangeRealtimeRisingEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={onChangeShakeDetectionEnabled}
+                  epicenterEstimationEnabled={epicenterEstimationEnabled}
+                  onChangeEpicenterEstimationEnabled={onChangeEpicenterEstimationEnabled}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={onBroadcastTestTsunami}
                   onCancelTestTsunami={onCancelTestTsunami}
@@ -13719,6 +13855,7 @@ function SettingsBody({
   realtimeApiToken, onChangeRealtimeApiToken,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
+  epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -13931,6 +14068,12 @@ function SettingsBody({
             description="観測点の震度データから揺れを自動検知し、地図上への表示とリアルタイムタブのフローティングへの一覧表示を行います。"
             checked={shakeDetectionEnabled}
             onChange={() => onChangeShakeDetectionEnabled(!shakeDetectionEnabled)}
+          />
+          <SettingsToggleRow
+            label="震源推定(実験的機能)"
+            description="緊急地震速報が出ない小さな地震でも、地震検知の結果から震央のおおよその位置を推定して地図上に×印で表示します。検知点数が少ないうちは精度が低く、位置が大きくぶれることがあります。「地震検知」がONの間のみ動作します。"
+            checked={epicenterEstimationEnabled}
+            onChange={() => onChangeEpicenterEstimationEnabled(!epicenterEstimationEnabled)}
           />
           <SettingsToggleRow
             label="震度上昇中を表示"
@@ -14459,6 +14602,20 @@ export default function App() {
     saveShakeDetectionEnabled(next);
     if (!next) setShakeEvents([]);
   }
+
+  // 震源推定(epicenterEstimation.ts、実験的機能)自体のON/OFF。地震検知と
+  // 同じ設定タブで操作し、localStorageに永続化する。デフォルトOFF。
+  const [epicenterEstimationEnabled, setEpicenterEstimationEnabledState] = useState(loadStoredEpicenterEstimationEnabled);
+
+  function handleChangeEpicenterEstimationEnabled(next) {
+    setEpicenterEstimationEnabledState(next);
+    saveEpicenterEstimationEnabled(next);
+  }
+
+  // 震源推定の最新結果(Map<eventId, estimateEpicenter()の戻り値>)。MapCanvas
+  // 側でtickごとに更新され、コールバック経由でここに渡される
+  // (現時点では地図上の表示のみに使用。他タブでの一覧表示は未実装)。
+  const [epicenterEstimates, setEpicenterEstimates] = useState(new Map());
 
   // 揺れ検知エンジン(shakeDetection.ts)が検出したイベントの一覧。MapCanvas側
   // でtickごとに更新され、コールバック経由でここに渡される。リアルタイムタブの
@@ -16401,6 +16558,8 @@ export default function App() {
           realtimeRisingEnabled={realtimeRisingEnabled}
           shakeDetectionEnabled={shakeDetectionEnabled}
           onShakeEventsChange={setShakeEvents}
+          epicenterEstimationEnabled={epicenterEstimationEnabled}
+          onEpicenterEstimateChange={setEpicenterEstimates}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
@@ -16732,6 +16891,8 @@ export default function App() {
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+                  epicenterEstimationEnabled={epicenterEstimationEnabled}
+                  onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
                   shakeEvents={shakeEvents}
                   realtimeDataTime={realtimeStream.dataTime}
                   testTsunami={testTsunami}
@@ -16838,6 +16999,8 @@ export default function App() {
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
               shakeDetectionEnabled={shakeDetectionEnabled}
               onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+              epicenterEstimationEnabled={epicenterEstimationEnabled}
+              onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
               shakeEvents={shakeEvents}
               realtimeDataTime={realtimeStream.dataTime}
               testTsunami={testTsunami}
