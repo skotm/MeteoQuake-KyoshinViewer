@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.1";
+const APP_VERSION = "0.5.2";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1075,6 +1075,10 @@ function buildEpicenterEstimateFeatures(estimates) {
         depthKm: Math.round(est.depthKm),
         pointCount: est.pointCount,
         errorLevel: est.errorLevel,
+        // 収束判定(EpicenterEstimator側で付与)。「検知点数が十分」かつ
+        // 「推定位置がしばらく動いていない」の両方を満たすまでfalseになる。
+        // 早い段階の大きくぶれた推定を、確定した推定と見分けられるようにする。
+        confirmed: !!est.confirmed,
       },
     });
   }
@@ -1743,10 +1747,11 @@ function MapCanvas({
           // 震源推定(epicenterEstimation.ts、実験的機能)のマーカー。
           // あくまで検知時刻からの推定であり実際の震源とは限らないため、
           // 断定的な×印は避け、白丸+黒縁のシンプルな印にしている。
-          // 検知点数がまだ少ない(=精度が低い)推定は薄く表示し、ある程度
-          // 検知点が揃った推定を濃く表示する想定で、pointCountをプロパティに
-          // 持たせておく。shake-test-true-epicenter-*より後に追加している
-          // ので、地図上では常にこちらが上に重なって見える。
+          // 収束判定(confirmedプロパティ、EpicenterEstimator側で付与)が
+          // まだの間(検知点数が少ない・推定位置がまだ動いている)は薄く
+          // 表示し、「参考値」であることが分かるようにする。
+          // shake-test-true-epicenter-*より後に追加しているので、地図上では
+          // 常にこちらが上に重なって見える。
           map.addSource("epicenter-estimates", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [] },
@@ -1757,12 +1762,12 @@ function MapCanvas({
             source: "epicenter-estimates",
             layout: { visibility: "none" },
             paint: {
-              "circle-radius": 7,
+              "circle-radius": ["case", ["get", "confirmed"], 8, 6],
               "circle-color": "#FFFFFF",
               "circle-stroke-color": "#111111",
-              "circle-stroke-width": 2,
-              "circle-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.45, 5, 1],
-              "circle-stroke-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.45, 5, 1],
+              "circle-stroke-width": ["case", ["get", "confirmed"], 2.5, 1.5],
+              "circle-opacity": ["case", ["get", "confirmed"], 1, 0.4],
+              "circle-stroke-opacity": ["case", ["get", "confirmed"], 1, 0.4],
             },
           });
 
@@ -12935,15 +12940,20 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
   const f = shakeTestForm;
   const running = !!shakeTest;
 
-  // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、最も検知点数が
-  // 多い(＝最も確からしい)ものを「テストとの比較対象」として1つ選ぶ。
-  // 通常はテスト中に発生する揺れ検知イベントは1つだけのはずだが、複数ある
-  // 場合の保険として一番信頼度が高そうなものを選ぶようにしている。
+  // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、最も信頼できそうな
+  // ものを「テストとの比較対象」として1つ選ぶ。収束済み(confirmed)のものを
+  // 優先し、その中では検知点数が多いものを選ぶ。まだ収束済みが無ければ、
+  // 収束前の中で検知点数が最も多いものを暫定的に使う。通常はテスト中に発生する
+  // 揺れ検知イベントは1つだけのはずだが、複数ある場合の保険。
   let bestEstimate = null;
   if (epicenterEstimates) {
     for (const est of epicenterEstimates.values()) {
       if (!est) continue;
-      if (!bestEstimate || est.pointCount > bestEstimate.pointCount) bestEstimate = est;
+      if (!bestEstimate) { bestEstimate = est; continue; }
+      const estBetter = est.confirmed && !bestEstimate.confirmed;
+      const bestBetter = bestEstimate.confirmed && !est.confirmed;
+      if (estBetter) bestEstimate = est;
+      else if (!bestBetter && est.pointCount > bestEstimate.pointCount) bestEstimate = est;
     }
   }
   const distanceErrorKm = (running && bestEstimate)
@@ -13122,6 +13132,14 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
                       </div>
                       <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
                         深さ{Math.round(bestEstimate.depthKm)}km ・ 検知点数{bestEstimate.pointCount}
+                      </div>
+                      <div style={{
+                        display: "inline-block", marginTop: 4, padding: "1px 6px", borderRadius: 4,
+                        fontSize: 10, fontWeight: 700,
+                        background: bestEstimate.confirmed ? "rgba(52,199,89,0.15)" : "rgba(255,149,0,0.15)",
+                        color: bestEstimate.confirmed ? "#248A3D" : "#B25000",
+                      }}>
+                        {bestEstimate.confirmed ? "収束済み" : "推定中(位置が変動する可能性あり)"}
                       </div>
                     </>
                   ) : (
