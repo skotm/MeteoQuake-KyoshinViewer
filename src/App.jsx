@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.0";
+const APP_VERSION = "0.5.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1041,28 +1041,25 @@ function buildShakeEventFeatures(shakeEvents) {
   });
 }
 
+// 2地点間の距離(km)。震源推定と地震検知テストの「正解」震源との誤差表示、
+// および震源推定マーカーの円描画で使う共通ヘルパー。
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 /* ─────────────────────────────────────────────────────
    震源推定(epicenterEstimation.ts / EpicenterEstimator)のマーカー用ヘルパー。
    揺れ検知イベントごとの推定結果(estimateEpicenter()の戻り値)を、
-   ×印(クロスヘア)のポリライン風Featureに変換する。塗りつぶし円
-   (shake-events-layer)とは別レイヤーにして重ねる。
+   地図上に置くPoint Featureに変換する。実際の震源とは限らない(あくまで
+   検知時刻からの推定値)という性質上、断定的な×印ではなく、白丸+黒縁の
+   controlしやすいシンプルな印にしている(circleレイヤーで描画)。
    ───────────────────────────────────────────────────── */
-const EPICENTER_MARKER_HALF_SIZE_METERS = 9000; // ×印の腕の長さ(中心から先端まで)
-
-function buildEpicenterCrosshairCoords(lon, lat) {
-  const latRad = lat * Math.PI / 180;
-  const metersPerDegLat = 111320;
-  const metersPerDegLon = 111320 * Math.max(0.000001, Math.cos(latRad));
-  const dx = EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLon;
-  const dy = EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLat;
-  // ×字を1本のLineStringで表現する(MultiLineStringが使えない簡易描画のため、
-  // 中心へいったん戻ってから反対方向の線を引く)。
-  return [
-    [lon - dx, lat - dy], [lon + dx, lat + dy],
-    [lon, lat],
-    [lon - dx, lat + dy], [lon + dx, lat - dy],
-  ];
-}
 
 // estimates: Map<eventId, estimateEpicenter()の戻り値 | null>
 // 検知点数が少なすぎて推定不能(null)のイベントは表示しない。
@@ -1072,10 +1069,7 @@ function buildEpicenterEstimateFeatures(estimates) {
     if (!est) continue;
     features.push({
       type: "Feature",
-      geometry: {
-        type: "LineString",
-        coordinates: buildEpicenterCrosshairCoords(est.lon, est.lat),
-      },
+      geometry: { type: "Point", coordinates: [est.lon, est.lat] },
       properties: {
         eventId,
         depthKm: Math.round(est.depthKm),
@@ -1085,6 +1079,35 @@ function buildEpicenterEstimateFeatures(estimates) {
     });
   }
   return features;
+}
+
+/* ─────────────────────────────────────────────────────
+   地震検知テスト(shakeTestSimulation.ts)用: テストで「実際に」設定した
+   震源(=正解の座標)を示す、菱形(縁が黒い白い四角)のマーカー用ヘルパー。
+   検知した震源(推定値・白丸黒縁)と見分けが付くよう、あえて別の形にして
+   いる。震源推定マーカーの下に敷く前提(重なった時に検知側が見えるように、
+   レイヤー追加順を推定マーカーより先にする)。
+   ───────────────────────────────────────────────────── */
+const TRUE_EPICENTER_MARKER_HALF_SIZE_METERS = 9000; // 菱形の中心から頂点までの距離
+
+function buildTrueEpicenterDiamondCoords(lon, lat) {
+  const latRad = lat * Math.PI / 180;
+  const metersPerDegLat = 111320;
+  const metersPerDegLon = 111320 * Math.max(0.000001, Math.cos(latRad));
+  const dx = TRUE_EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLon;
+  const dy = TRUE_EPICENTER_MARKER_HALF_SIZE_METERS / metersPerDegLat;
+  // 上→右→下→左→上、の順で菱形(正方形を45度回転させた形)の頂点を結ぶ。
+  return [[lon, lat + dy], [lon + dx, lat], [lon, lat - dy], [lon - dx, lat], [lon, lat + dy]];
+}
+
+// trueEpicenter: { lat, lon } | null (地震検知テストが実行中でなければnull)
+function buildTrueEpicenterFeatures(trueEpicenter) {
+  if (!trueEpicenter) return [];
+  return [{
+    type: "Feature",
+    geometry: { type: "Polygon", coordinates: [buildTrueEpicenterDiamondCoords(trueEpicenter.lon, trueEpicenter.lat)] },
+    properties: {},
+  }];
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1121,6 +1144,9 @@ function MapCanvas({
   // イベントが発生しないため実質的に動作しない。
   epicenterEstimationEnabled = false,
   onEpicenterEstimateChange,
+  // 地震検知テスト(shakeTestSimulation.ts)実行中の「正解」の震源。
+  // { lat, lon, depthKm, magnitude } | null。テスト中でなければnull。
+  shakeTestTrueEpicenter = null,
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -1691,23 +1717,52 @@ function MapCanvas({
             },
           });
 
-          // 震源推定(epicenterEstimation.ts、実験的機能)の×印マーカー。
+          // 地震検知テスト(shakeTestSimulation.ts)の「正解」の震源。
+          // 菱形(縁が黒い白い四角)で表示し、下で追加する震源推定の
+          // マーカー(白丸黒縁)より先に追加する=描画順で下に敷く
+          // (検知した震源側を常に上に見せるため)。
+          map.addSource("shake-test-true-epicenter", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "shake-test-true-epicenter-fill-layer",
+            type: "fill",
+            source: "shake-test-true-epicenter",
+            layout: { visibility: "none" },
+            paint: { "fill-color": "#FFFFFF", "fill-opacity": 1 },
+          });
+          map.addLayer({
+            id: "shake-test-true-epicenter-outline-layer",
+            type: "line",
+            source: "shake-test-true-epicenter",
+            layout: { visibility: "none", "line-join": "round" },
+            paint: { "line-color": "#111111", "line-width": 2 },
+          });
+
+          // 震源推定(epicenterEstimation.ts、実験的機能)のマーカー。
+          // あくまで検知時刻からの推定であり実際の震源とは限らないため、
+          // 断定的な×印は避け、白丸+黒縁のシンプルな印にしている。
           // 検知点数がまだ少ない(=精度が低い)推定は薄く表示し、ある程度
-          // 検知点が揃った推定(confirmed相当。App側のロジックで判定)を
-          // 濃く表示する想定で、pointCountをプロパティに持たせておく。
+          // 検知点が揃った推定を濃く表示する想定で、pointCountをプロパティに
+          // 持たせておく。shake-test-true-epicenter-*より後に追加している
+          // ので、地図上では常にこちらが上に重なって見える。
           map.addSource("epicenter-estimates", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [] },
           });
           map.addLayer({
             id: "epicenter-estimates-layer",
-            type: "line",
+            type: "circle",
             source: "epicenter-estimates",
-            layout: { visibility: "none", "line-cap": "round" },
+            layout: { visibility: "none" },
             paint: {
-              "line-color": "#FF3B30",
-              "line-width": 3,
-              "line-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.35, 5, 0.9],
+              "circle-radius": 7,
+              "circle-color": "#FFFFFF",
+              "circle-stroke-color": "#111111",
+              "circle-stroke-width": 2,
+              "circle-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.45, 5, 1],
+              "circle-stroke-opacity": ["interpolate", ["linear"], ["get", "pointCount"], 2, 0.45, 5, 1],
             },
           });
 
@@ -2002,7 +2057,38 @@ function MapCanvas({
         showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
       );
     }
+    // 地震検知テストの「正解」の震源マーカーは、強震モニタ本体が表示されている
+    // 間は常に出す(震源推定機能自体がOFFでも、テストで震源がどこに設定されて
+    // いるかは確認できるようにする)。
+    if (map.getLayer("shake-test-true-epicenter-fill-layer")) {
+      map.setLayoutProperty(
+        "shake-test-true-epicenter-fill-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
+    if (map.getLayer("shake-test-true-epicenter-outline-layer")) {
+      map.setLayoutProperty(
+        "shake-test-true-epicenter-outline-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
   }, [showRealtimeMapLayers, epicenterEstimationEnabled, status]);
+
+  // 地震検知テストの「正解」の震源(shakeTestTrueEpicenter)が変わるたびに、
+  // 菱形マーカー用のsourceを更新する。tickごとに動くものではないので、
+  // 揺れ検知の毎tick処理(下のuseEffect)とは分離している。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+    const source = map.getSource("shake-test-true-epicenter");
+    if (!source) return;
+    source.setData({
+      type: "FeatureCollection",
+      features: buildTrueEpicenterFeatures(shakeTestTrueEpicenter),
+    });
+  }, [shakeTestTrueEpicenter, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
   // 閾値(realtimeIntensityThreshold)を変えても比較が崩れないよう、表示中/非表示中を
@@ -7996,6 +8082,7 @@ function BottomDock({
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
   shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
+  epicenterEstimates,
   eews = EMPTY_EQDB_LIST, eewDetailOpen, eewOpenSignal, onOpenEewDetail, onCloseEewDetail,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
   onRemoveTsunamiAreaPick, onCycleTsunamiAreaGrade,
@@ -9577,6 +9664,7 @@ function BottomDock({
                   onShakeTestAction={onShakeTestAction}
                   shakeTestForm={shakeTestForm}
                   shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
+                  epicenterEstimates={epicenterEstimates}
                   tsunamiAreaPickActive={tsunamiAreaPickActive}
                   onStartTsunamiAreaPick={onStartTsunamiAreaPick}
                   pickedTsunamiAreas={pickedTsunamiAreas}
@@ -12842,10 +12930,28 @@ function QuakeTestBroadcastPanel({ testQuake, onAction, quakeTestForm, quakeEpic
    深さ・Mを指定して仮想的な揺れを発生させる。QuakeTestBroadcastPanelと
    同じUIパターン(震源ピック・SettingsCardでの入力欄)を踏襲している。
    ───────────────────────────────────────────────────── */
-function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTestEpicenterPickActive }) {
+function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTestEpicenterPickActive, epicenterEstimates }) {
   const { tokens } = useContext(ThemeContext);
   const f = shakeTestForm;
   const running = !!shakeTest;
+
+  // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、最も検知点数が
+  // 多い(＝最も確からしい)ものを「テストとの比較対象」として1つ選ぶ。
+  // 通常はテスト中に発生する揺れ検知イベントは1つだけのはずだが、複数ある
+  // 場合の保険として一番信頼度が高そうなものを選ぶようにしている。
+  let bestEstimate = null;
+  if (epicenterEstimates) {
+    for (const est of epicenterEstimates.values()) {
+      if (!est) continue;
+      if (!bestEstimate || est.pointCount > bestEstimate.pointCount) bestEstimate = est;
+    }
+  }
+  const distanceErrorKm = (running && bestEstimate)
+    ? haversineKm(f.latitude, f.longitude, bestEstimate.lat, bestEstimate.lon)
+    : null;
+  const depthErrorKm = (running && bestEstimate)
+    ? bestEstimate.depthKm - f.depth
+    : null;
 
   const inputStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
@@ -12974,6 +13080,68 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
         <div style={{ margin: "6px 14px 10px", fontSize: 11, color: `rgba(${tokens.ink},0.5)`, lineHeight: 1.7 }}>
           シミュレーション実行中: {shakeTest.form.place}・M{shakeTest.form.magnitude.toFixed(1)}・深さ{shakeTest.form.depth}km
         </div>
+      )}
+
+      {running && (
+        <>
+          <div style={{ margin: "18px 14px 6px" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: `rgba(${tokens.ink},0.7)` }}>
+              実際の震源 と 検知した震源(推定)の比較
+            </span>
+          </div>
+          <SettingsCard>
+            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                    <span style={{
+                      display: "inline-block", width: 10, height: 10, transform: "rotate(45deg)",
+                      background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
+                    }} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>実際の震源</span>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>
+                    北緯{f.latitude?.toFixed?.(2)}° ・ 東経{f.longitude?.toFixed?.(2)}°
+                  </div>
+                  <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
+                    深さ{f.depth}km
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                    <span style={{
+                      display: "inline-block", width: 10, height: 10, borderRadius: "50%",
+                      background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
+                    }} />
+                    <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>検知した震源(推定)</span>
+                  </div>
+                  {bestEstimate ? (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 700 }}>
+                        北緯{bestEstimate.lat.toFixed(2)}° ・ 東経{bestEstimate.lon.toFixed(2)}°
+                      </div>
+                      <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
+                        深さ{Math.round(bestEstimate.depthKm)}km ・ 検知点数{bestEstimate.pointCount}
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.45)`, marginTop: 2 }}>
+                      まだ検知なし(「震源推定」設定がOFFの場合は表示されません)
+                    </div>
+                  )}
+                </div>
+              </div>
+              {bestEstimate && (
+                <div style={{
+                  marginTop: 2, paddingTop: 10, borderTop: `1px solid rgba(${tokens.ink},0.08)`,
+                  fontSize: 12, color: `rgba(${tokens.ink},0.65)`,
+                }}>
+                  誤差: 水平方向 約{distanceErrorKm.toFixed(1)}km ・ 深さ方向 {depthErrorKm >= 0 ? "+" : ""}{depthErrorKm.toFixed(0)}km
+                </div>
+              )}
+            </div>
+          </SettingsCard>
+        </>
       )}
     </>
   );
@@ -13861,6 +14029,7 @@ function SettingsBody({
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
   shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
+  epicenterEstimates,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
   onRemoveTsunamiAreaPick, onCycleTsunamiAreaGrade,
   pickedTsunamiHeights, onChangeTsunamiHeightPick, onRemoveTsunamiHeightPick,
@@ -14287,6 +14456,7 @@ function SettingsBody({
           onAction={onShakeTestAction}
           shakeTestForm={shakeTestForm}
           shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
+          epicenterEstimates={epicenterEstimates}
         />
       </>
     );
@@ -15165,6 +15335,18 @@ export default function App() {
   const [shakeTest, setShakeTest] = useState(null); // { startedAt, perStation, form }
   // shakeTest実行中に一定間隔で値を再計算させるための、ただのカウンタ。
   const [shakeTestTick, setShakeTestTick] = useState(0);
+
+  // 地震検知テスト実行中の「正解」の震源(MapCanvasへ渡す用)。テスト中で
+  // なければnull。shakeTest.formがそのまま入っているとundefined混じりに
+  // なりうるので、必要なフィールドだけ抜き出しておく。
+  const shakeTestTrueEpicenter = shakeTest
+    ? {
+        lat: shakeTest.form.latitude,
+        lon: shakeTest.form.longitude,
+        depthKm: shakeTest.form.depth,
+        magnitude: shakeTest.form.magnitude,
+      }
+    : null;
 
   function handleShakeTestAction(action, payload) {
     if (action === "patchForm") {
@@ -16560,6 +16742,7 @@ export default function App() {
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
           onEpicenterEstimateChange={setEpicenterEstimates}
+          shakeTestTrueEpicenter={shakeTestTrueEpicenter}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
@@ -16917,6 +17100,7 @@ export default function App() {
                   onShakeTestAction={handleShakeTestAction}
                   shakeTestForm={shakeTestForm}
                   shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
+                  epicenterEstimates={epicenterEstimates}
                   tsunamiAreaPickActive={tsunamiAreaPickActive}
                   onStartTsunamiAreaPick={startTsunamiAreaPick}
                   pickedTsunamiAreas={pickedTsunamiAreas}
@@ -17025,6 +17209,7 @@ export default function App() {
               onShakeTestAction={handleShakeTestAction}
               shakeTestForm={shakeTestForm}
               shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
+              epicenterEstimates={epicenterEstimates}
               tsunamiAreaPickActive={tsunamiAreaPickActive}
               onStartTsunamiAreaPick={startTsunamiAreaPick}
               pickedTsunamiAreas={pickedTsunamiAreas}
