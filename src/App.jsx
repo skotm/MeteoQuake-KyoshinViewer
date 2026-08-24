@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.6";
+const APP_VERSION = "0.5.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1888,15 +1888,19 @@ function MapCanvas({
             source: "shake-detected-points",
             layout: { visibility: "none" },
             paint: {
+              // realtime-points-layer(震度で色分けされた点)と同じ半径にして、
+              // その点の輪郭ぴったりに黒い縁取りだけを重ねる。塗りは透明にして
+              // 色が透けて見えるようにする(以前は塗りつぶしの白丸だったため、
+              // ズームレベルによっては色付きの点がほぼ隠れてしまっていた)。
               "circle-radius": [
                 "interpolate", ["linear"], ["zoom"],
-                4, 2,
-                7, 3.5,
-                10, 5.5,
-                14, 8,
-                18, 13,
+                4, 2.5,
+                7, 5,
+                10, 8.5,
+                14, 12,
+                18, 20,
               ],
-              "circle-color": "#FFFFFF",
+              "circle-color": "rgba(0,0,0,0)",
               "circle-stroke-color": "#111111",
               "circle-stroke-width": 1.5,
             },
