@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.7";
+const APP_VERSION = "0.5.8";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1874,24 +1874,35 @@ function MapCanvas({
           });
 
           // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定された
-          // 観測点に打つ、縁が黒い白い点。realtime-points-layer(震度で色分け
-          // された点)の上に重なるよう、その直後に追加している。震源推定の
-          // マーカー(epicenter-estimates-layer、同じ白丸+黒縁のスタイル)より
-          // 見た目のインパクトを抑えるため、一回り小さいradiusにしている。
+          // 観測点に、縁取りだけの黒い輪(realtime-points-layerの色付きの点は
+          // 透けて見える)を重ねる。ただし観測点が密集する場面(広域ズーム)では
+          // 輪同士が重なり合って黒く塗りつぶれたように見えてしまう(線を細く・
+          // 半透明にする対症療法では、点の数自体が多いと結局潰れてしまい
+          // 根本解決にならない)。そのため、MapLibreのGeoJSONソース標準機能
+          // である"cluster"(近接する点を1つのクラスタにまとめ、ズームすると
+          // 自動的に分離していく仕組み)を使う。近くにまとまった件数を数字で
+          // 示すクラスタと、そこまで密集していない個々の点(縁取りの輪)を
+          // 描き分ける。
           map.addSource("shake-detected-points", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [] },
+            cluster: true,
+            // ズームレベル14未満はクラスタ化する(それ以上ズームすれば、
+            // たいていの観測点密度では重ならずに個別表示できる)。
+            clusterMaxZoom: 14,
+            // クラスタにまとめる半径(ピクセル)。大きいほど積極的にまとめる。
+            clusterRadius: 50,
           });
+
+          // 密集していない個々の観測点: 従来通り、色付きの点の輪郭ぴったりに
+          // 黒い縁取りだけを重ねる(塗りは透明)。
           map.addLayer({
             id: "shake-detected-points-layer",
             type: "circle",
             source: "shake-detected-points",
+            filter: ["!", ["has", "point_count"]],
             layout: { visibility: "none" },
             paint: {
-              // realtime-points-layer(震度で色分けされた点)と同じ半径にして、
-              // その点の輪郭ぴったりに黒い縁取りだけを重ねる。塗りは透明にして
-              // 色が透けて見えるようにする(以前は塗りつぶしの白丸だったため、
-              // ズームレベルによっては色付きの点がほぼ隠れてしまっていた)。
               "circle-radius": [
                 "interpolate", ["linear"], ["zoom"],
                 4, 2.5,
@@ -1902,6 +1913,35 @@ function MapCanvas({
               ],
               "circle-color": "rgba(0,0,0,0)",
               "circle-stroke-color": "#111111",
+              "circle-stroke-width": 1.5,
+            },
+          });
+
+          // 密集してクラスタにまとまった観測点: 個々の色は塗り分けられない
+          // (複数の観測点をまとめているため)ので、代わりに黒い塗りつぶしの
+          // 丸で示す。件数が多いクラスタほど大きく描くことで、数字を出さずに
+          // 密集度を表す(このアプリの地図スタイルはglyphs(文字フォント)を
+          // 設定しておらず、symbolレイヤーのtext-fieldでは文字が描画されない
+          // ため、数字ラベルは使わない。数字入りアイコンが必要な場合は
+          // station-points-symbolのように、事前生成したスプライト画像
+          // (icon-image)方式にする必要がある)。
+          map.addLayer({
+            id: "shake-detected-clusters-layer",
+            type: "circle",
+            source: "shake-detected-points",
+            filter: ["has", "point_count"],
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": [
+                "interpolate", ["linear"], ["get", "point_count"],
+                2, 10,
+                10, 14,
+                50, 18,
+                200, 24,
+              ],
+              "circle-color": "#111111",
+              "circle-opacity": 0.8,
+              "circle-stroke-color": "#FFFFFF",
               "circle-stroke-width": 1.5,
             },
           });
@@ -2144,14 +2184,12 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-    // 検知済み観測点の白丸+黒縁マーカーも、揺れ検知イベントのレイヤーと
-    // 同じ条件(強震モニタ本体が表示されている間)で出す。
-    if (map.getLayer("shake-detected-points-layer")) {
-      map.setLayoutProperty(
-        "shake-detected-points-layer",
-        "visibility",
-        showRealtimeMapLayers ? "visible" : "none"
-      );
+    // 検知済み観測点の黒縁の輪マーカー(個別・クラスタ両方)も、揺れ検知
+    // イベントのレイヤーと同じ条件(強震モニタ本体が表示されている間)で出す。
+    for (const layerId of ["shake-detected-points-layer", "shake-detected-clusters-layer"]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, "visibility", showRealtimeMapLayers ? "visible" : "none");
+      }
     }
     // 震源推定マーカーも、強震モニタ本体+震源推定機能自体がONの間だけ出す。
     if (map.getLayer("epicenter-estimates-layer")) {
