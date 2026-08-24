@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.3";
+const APP_VERSION = "0.5.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
