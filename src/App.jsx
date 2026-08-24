@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useRealtimeStream } from "./useRealtimeStream";
 import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY } from "./shindoColorScale";
 import { ShakeDetectionEngine } from "./shakeDetection";
-import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished } from "./shakeTestSimulation";
+import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished, P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "./shakeTestSimulation";
 import { EpicenterEstimator } from "./epicenterEstimation";
 
 /* ─────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.2";
+const APP_VERSION = "0.5.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1744,14 +1744,48 @@ function MapCanvas({
             paint: { "line-color": "#111111", "line-width": 2 },
           });
 
+          // 震源推定(epicenterEstimation.ts、実験的機能)のP波・S波到達円。
+          // estimateEpicenter()が既に算出しているoriginTime(発生時刻)を基準に、
+          // shakeTestSimulation.tsと同じ固定P/S波速度モデルで地表の到達円を
+          // 描く(震源推定の走時計算=着未着法の物理モデルと一致させるため、
+          // EEW用のeewWaveSurfaceRadiusKmが使う簡易値とは別に、こちらの速度
+          // 定数を使う)。データは下方のuseEffectがrequestAnimationFrameで
+          // 頻繁にsetDataする(EEWのP波/S波円と同じ設計)ため、ここでは空の
+          // ソースを用意するだけでよい。
+          // 震源推定マーカー(epicenter-estimates-layer)より前に追加し、
+          // マーカーが常に円の上に重なって見えるようにする。
+          map.addSource("epicenter-estimate-pwave", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+          map.addLayer({
+            id: "epicenter-estimate-pwave-fill-layer", type: "fill", source: "epicenter-estimate-pwave",
+            layout: { visibility: "none" },
+            paint: { "fill-color": modeRef.current === "dark" ? "#FFFFFF" : "#000000", "fill-opacity": 0.04 },
+          });
+          map.addLayer({
+            id: "epicenter-estimate-pwave-line-layer", type: "line", source: "epicenter-estimate-pwave",
+            layout: { visibility: "none" },
+            paint: { "line-color": modeRef.current === "dark" ? "#FFFFFF" : "#000000", "line-width": 1.2, "line-opacity": 0.7 },
+          });
+
+          map.addSource("epicenter-estimate-swave", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+          map.addLayer({
+            id: "epicenter-estimate-swave-fill-layer", type: "fill", source: "epicenter-estimate-swave",
+            layout: { visibility: "none" },
+            paint: { "fill-color": modeRef.current === "dark" ? "#FFFFFF" : "#000000", "fill-opacity": 0.07 },
+          });
+          map.addLayer({
+            id: "epicenter-estimate-swave-line-layer", type: "line", source: "epicenter-estimate-swave",
+            layout: { visibility: "none" },
+            paint: { "line-color": modeRef.current === "dark" ? "#FFFFFF" : "#000000", "line-width": 2, "line-opacity": 0.9 },
+          });
+
           // 震源推定(epicenterEstimation.ts、実験的機能)のマーカー。
           // あくまで検知時刻からの推定であり実際の震源とは限らないため、
           // 断定的な×印は避け、白丸+黒縁のシンプルな印にしている。
           // 収束判定(confirmedプロパティ、EpicenterEstimator側で付与)が
           // まだの間(検知点数が少ない・推定位置がまだ動いている)は薄く
           // 表示し、「参考値」であることが分かるようにする。
-          // shake-test-true-epicenter-*より後に追加しているので、地図上では
-          // 常にこちらが上に重なって見える。
+          // shake-test-true-epicenter-*・P波/S波到達円より後に追加しているので、
+          // 地図上では常にこちらが上に重なって見える。
           map.addSource("epicenter-estimates", {
             type: "geojson",
             data: { type: "FeatureCollection", features: [] },
@@ -2062,6 +2096,22 @@ function MapCanvas({
         showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
       );
     }
+    // 震源推定のP波・S波到達円も、マーカーと同じ条件(強震モニタ本体+
+    // 震源推定機能自体がON)の間だけ出す。
+    for (const layerId of [
+      "epicenter-estimate-pwave-fill-layer",
+      "epicenter-estimate-pwave-line-layer",
+      "epicenter-estimate-swave-fill-layer",
+      "epicenter-estimate-swave-line-layer",
+    ]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(
+          layerId,
+          "visibility",
+          showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
+        );
+      }
+    }
     // 地震検知テストの「正解」の震源マーカーは、強震モニタ本体が表示されている
     // 間は常に出す(震源推定機能自体がOFFでも、テストで震源がどこに設定されて
     // いるかは確認できるようにする)。
@@ -2109,6 +2159,10 @@ function MapCanvas({
   // 揺れ検知イベントの直近の検出結果。ズーム変更時、検知エンジンのtickとは
   // 独立に円ポリゴンだけを再投影するために参照する(下のuseEffect)。
   const lastShakeEventsRef = useRef([]);
+
+  // 震源推定の最新結果(Map<eventId, result>)。P波・S波到達円のアニメーション
+  // (requestAnimationFrameで独立に回る、下方のuseEffect)がここを参照する。
+  const lastEpicenterEstimatesRef = useRef(new Map());
 
   // 震源推定(epicenterEstimation.ts)本体。ShakeDetectionEngineと同様、
   // 一度だけ生成して使い回す(イベントごとの推定キャッシュを内部に持つため)。
@@ -2220,6 +2274,7 @@ function MapCanvas({
       const estimates = shakeEvents.length > 0
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, Date.now())
         : new Map();
+      lastEpicenterEstimatesRef.current = estimates;
       const epicenterSource = map.getSource("epicenter-estimates");
       if (epicenterSource) {
         epicenterSource.setData({
@@ -2228,6 +2283,11 @@ function MapCanvas({
         });
       }
       onEpicenterEstimateChangeRef.current?.(estimates);
+    } else {
+      // 機能自体がOFFの間は、P波/S波到達円アニメーション用の参照も
+      // 空にしておく(レイヤー自体は非表示だが、念のため古いデータを
+      // 参照し続けないようにする)。
+      lastEpicenterEstimatesRef.current = new Map();
     }
   }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
 
@@ -2278,6 +2338,52 @@ function MapCanvas({
         if (pSource) pSource.setData({ type: "FeatureCollection", features: pFeatures });
         if (sSource) sSource.setData({ type: "FeatureCollection", features: sFeatures });
         if (hypoSource) hypoSource.setData({ type: "FeatureCollection", features: hypoFeatures });
+      }
+      frameId = requestAnimationFrame(tick);
+    }
+    frameId = requestAnimationFrame(tick);
+
+    return () => { if (frameId != null) cancelAnimationFrame(frameId); };
+  }, [status]);
+
+  // 震源推定(epicenterEstimation.ts、実験的機能): P波・S波到達円をリアルタイムに
+  // 更新する。EEWのP波/S波円(上のuseEffect)と同じ設計(requestAnimationFrameを
+  // 180ms間引きで回す)を踏襲する。lastEpicenterEstimatesRefは震源推定自体が
+  // OFFの間は空のMapになる(上のuseEffectで管理)ため、ここでは
+  // epicenterEstimationEnabled自体の判定はせず素直に参照するだけでよい
+  // (レイヤーの表示/非表示は別のuseEffectがvisibilityで制御する)。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+
+    let frameId = null;
+    let lastTick = 0;
+
+    function tick(ts) {
+      if (ts - lastTick >= 180) {
+        lastTick = ts;
+        const estimates = lastEpicenterEstimatesRef.current;
+        const pFeatures = [];
+        const sFeatures = [];
+        const now = Date.now();
+
+        if (estimates && estimates.size > 0) {
+          for (const result of estimates.values()) {
+            if (!result || result.lat == null || result.lon == null || result.originTime == null) continue;
+            const elapsedSec = (now - result.originTime) / 1000;
+            const pRadiusKm = eewWaveSurfaceRadiusKm(elapsedSec, result.depthKm, EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S);
+            const sRadiusKm = eewWaveSurfaceRadiusKm(elapsedSec, result.depthKm, EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S);
+            const pRing = eewCirclePolygon(result.lat, result.lon, pRadiusKm);
+            if (pRing) pFeatures.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [pRing] }, properties: {} });
+            const sRing = eewCirclePolygon(result.lat, result.lon, sRadiusKm);
+            if (sRing) sFeatures.push({ type: "Feature", geometry: { type: "Polygon", coordinates: [sRing] }, properties: {} });
+          }
+        }
+
+        const pSource = map.getSource("epicenter-estimate-pwave");
+        const sSource = map.getSource("epicenter-estimate-swave");
+        if (pSource) pSource.setData({ type: "FeatureCollection", features: pFeatures });
+        if (sSource) sSource.setData({ type: "FeatureCollection", features: sFeatures });
       }
       frameId = requestAnimationFrame(tick);
     }
@@ -2860,6 +2966,21 @@ function MapCanvas({
     map.setPaintProperty("epicenter-points-layer", "circle-color", buildEpicenterCircleColorExpr(colorScheme));
     map.setPaintProperty("epicenter-points-layer", "circle-stroke-color", buildEpicenterCircleStrokeColorExpr(colorScheme, mode));
   }, [colorScheme, mode, status]);
+
+  // 震源推定のP波・S波到達円は、ダークモードは白、ライトモードは黒の円周線
+  // にする(塗りつぶしも同色・低不透明度で揃える)。ダーク/ライト切り替え時に
+  // 塗り直す。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+    const lineColor = mode === "dark" ? "#FFFFFF" : "#000000";
+    for (const layerId of ["epicenter-estimate-pwave-fill-layer", "epicenter-estimate-swave-fill-layer"]) {
+      if (map.getLayer(layerId)) map.setPaintProperty(layerId, "fill-color", lineColor);
+    }
+    for (const layerId of ["epicenter-estimate-pwave-line-layer", "epicenter-estimate-swave-line-layer"]) {
+      if (map.getLayer(layerId)) map.setPaintProperty(layerId, "line-color", lineColor);
+    }
+  }, [mode, status]);
 
   return (
     <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: themeTokens.mapBg }}>
