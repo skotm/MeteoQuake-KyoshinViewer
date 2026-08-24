@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.8";
+const APP_VERSION = "0.6.0";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1043,25 +1043,18 @@ function buildShakeEventFeatures(shakeEvents) {
 
 // 揺れ検知イベント(shakeEvents)に含まれる、個々の「検知済み観測点」
 // (event.detections、ShakeDetectionEngineが揺れ有りと判定した観測点の
-// 一覧)を、地図上に点として打つためのPoint Featureに変換する。
-// 同じ観測点が複数のイベントに(通常は起きないはずだが、念のため)重複して
-// 含まれていても地図上では1点にまとめたいので、観測点idで重複排除する。
-function buildDetectedStationFeatures(shakeEvents) {
-  const seen = new Set();
-  const features = [];
+// 一覧)のidをまとめたSetを作る。realtime-points-layerの各featureに
+// isDetectedフラグを立てるために使う(検知済みの観測点だけ縁取りを太い
+// 黒にする。別レイヤーで円を重ねる方式は、観測点が密集する場面で円同士が
+// 重なり合って黒く塗りつぶれたように見えてしまう問題があったため、この
+// 点自体の縁取りを変える方式に変更した)。
+function buildDetectedStationIdSet(shakeEvents) {
+  const ids = new Set();
   for (const e of shakeEvents) {
     if (!e.detections) continue;
-    for (const d of e.detections) {
-      if (seen.has(d.id)) continue;
-      seen.add(d.id);
-      features.push({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [d.lon, d.lat] },
-        properties: { id: d.id },
-      });
-    }
+    for (const d of e.detections) ids.add(d.id);
   }
-  return features;
+  return ids;
 }
 
 // 2地点間の距離(km)。震源推定と地震検知テストの「正解」震源との誤差表示、
@@ -1858,8 +1851,16 @@ function MapCanvas({
               // featuresに含めていないため、ここでのフォールバック分岐は
               // 実質発生しない。それでも将来の保険として"?"色は残しておく。
               "circle-color": ["coalesce", ["get", "dotColor"], "rgba(128,128,128,0.4)"],
-              "circle-stroke-width": 0.5,
-              "circle-stroke-color": "rgba(255,255,255,0.6)",
+              // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定
+              // された観測点は、縁取りを太い黒にする。以前は別レイヤーで
+              // 黒い輪を重ねる方式だったが、観測点が密集する場面で輪同士が
+              // 重なり合って黒く塗りつぶれたように見えてしまっていた。
+              // 別の円を重ねるのではなく、この点自体の縁取りを条件分岐で
+              // 変えるだけにすれば、そもそも重ねる円が無いため密集による
+              // 見た目の破綻が起きない。isDetectedはGeoJSON生成側
+              // (useEffect)でfeatureごとに付与している。
+              "circle-stroke-width": ["case", ["get", "isDetected"], 2.5, 0.5],
+              "circle-stroke-color": ["case", ["get", "isDetected"], "#111111", "rgba(255,255,255,0.6)"],
             },
           });
           map.on("mouseenter", "realtime-points-layer", () => {
@@ -1871,79 +1872,6 @@ function MapCanvas({
           map.on("click", "realtime-points-layer", (e) => {
             if (!e.features || !e.features.length) return;
             setSelectedRealtimePoint(e.features[0].properties);
-          });
-
-          // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定された
-          // 観測点に、縁取りだけの黒い輪(realtime-points-layerの色付きの点は
-          // 透けて見える)を重ねる。ただし観測点が密集する場面(広域ズーム)では
-          // 輪同士が重なり合って黒く塗りつぶれたように見えてしまう(線を細く・
-          // 半透明にする対症療法では、点の数自体が多いと結局潰れてしまい
-          // 根本解決にならない)。そのため、MapLibreのGeoJSONソース標準機能
-          // である"cluster"(近接する点を1つのクラスタにまとめ、ズームすると
-          // 自動的に分離していく仕組み)を使う。近くにまとまった件数を数字で
-          // 示すクラスタと、そこまで密集していない個々の点(縁取りの輪)を
-          // 描き分ける。
-          map.addSource("shake-detected-points", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [] },
-            cluster: true,
-            // ズームレベル14未満はクラスタ化する(それ以上ズームすれば、
-            // たいていの観測点密度では重ならずに個別表示できる)。
-            clusterMaxZoom: 14,
-            // クラスタにまとめる半径(ピクセル)。大きいほど積極的にまとめる。
-            clusterRadius: 50,
-          });
-
-          // 密集していない個々の観測点: 従来通り、色付きの点の輪郭ぴったりに
-          // 黒い縁取りだけを重ねる(塗りは透明)。
-          map.addLayer({
-            id: "shake-detected-points-layer",
-            type: "circle",
-            source: "shake-detected-points",
-            filter: ["!", ["has", "point_count"]],
-            layout: { visibility: "none" },
-            paint: {
-              "circle-radius": [
-                "interpolate", ["linear"], ["zoom"],
-                4, 2.5,
-                7, 5,
-                10, 8.5,
-                14, 12,
-                18, 20,
-              ],
-              "circle-color": "rgba(0,0,0,0)",
-              "circle-stroke-color": "#111111",
-              "circle-stroke-width": 1.5,
-            },
-          });
-
-          // 密集してクラスタにまとまった観測点: 個々の色は塗り分けられない
-          // (複数の観測点をまとめているため)ので、代わりに黒い塗りつぶしの
-          // 丸で示す。件数が多いクラスタほど大きく描くことで、数字を出さずに
-          // 密集度を表す(このアプリの地図スタイルはglyphs(文字フォント)を
-          // 設定しておらず、symbolレイヤーのtext-fieldでは文字が描画されない
-          // ため、数字ラベルは使わない。数字入りアイコンが必要な場合は
-          // station-points-symbolのように、事前生成したスプライト画像
-          // (icon-image)方式にする必要がある)。
-          map.addLayer({
-            id: "shake-detected-clusters-layer",
-            type: "circle",
-            source: "shake-detected-points",
-            filter: ["has", "point_count"],
-            layout: { visibility: "none" },
-            paint: {
-              "circle-radius": [
-                "interpolate", ["linear"], ["get", "point_count"],
-                2, 10,
-                10, 14,
-                50, 18,
-                200, 24,
-              ],
-              "circle-color": "#111111",
-              "circle-opacity": 0.8,
-              "circle-stroke-color": "#FFFFFF",
-              "circle-stroke-width": 1.5,
-            },
           });
 
           map.on("mouseenter", "epicenter-points-layer", () => {
@@ -2184,13 +2112,6 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-    // 検知済み観測点の黒縁の輪マーカー(個別・クラスタ両方)も、揺れ検知
-    // イベントのレイヤーと同じ条件(強震モニタ本体が表示されている間)で出す。
-    for (const layerId of ["shake-detected-points-layer", "shake-detected-clusters-layer"]) {
-      if (map.getLayer(layerId)) {
-        map.setLayoutProperty(layerId, "visibility", showRealtimeMapLayers ? "visible" : "none");
-      }
-    }
     // 震源推定マーカーも、強震モニタ本体+震源推定機能自体がONの間だけ出す。
     if (map.getLayer("epicenter-estimates-layer")) {
       map.setLayoutProperty(
@@ -2312,6 +2233,13 @@ function MapCanvas({
     // 震度の昇順(小さい→大きい)にソートしておく必要がある。
     const prevValues = prevRealtimeValuesRef.current;
     const calmColor = intensityToShindoColor(SHINDO_MIN_INTENSITY);
+    // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定された
+    // 観測点のidの集合。このeffect内では揺れ検知(shakeEngineRef.current.
+    // processTick)自体はこの少し下で1tick分進めるため、ここではまだ
+    // 直近1tick前(最大500ms前)の判定結果(lastShakeEventsRef.current)を
+    // 参照することになるが、見た目のズレとしては無視できるレベルなので
+    // 許容する。
+    const detectedStationIds = buildDetectedStationIdSet(lastShakeEventsRef.current);
     const features = realtimeStations
       .filter((s) => realtimeValues.has(s.id) && realtimeValues.get(s.id) >= realtimeIntensityThreshold)
       .map((s) => {
@@ -2338,6 +2266,7 @@ function MapCanvas({
             intensity: value,
             hasData: true,
             dotColor,
+            isDetected: detectedStationIds.has(s.id),
           },
         };
       })
@@ -2364,13 +2293,6 @@ function MapCanvas({
       shakeSource.setData({
         type: "FeatureCollection",
         features: buildShakeEventFeatures(shakeEvents),
-      });
-    }
-    const detectedPointsSource = map.getSource("shake-detected-points");
-    if (detectedPointsSource) {
-      detectedPointsSource.setData({
-        type: "FeatureCollection",
-        features: buildDetectedStationFeatures(shakeEvents),
       });
     }
     onShakeEventsChangeRef.current?.(shakeEvents);
