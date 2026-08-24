@@ -1,0 +1,875 @@
+/**
+ * epicenterEstimation.ts
+ * ------------------------------------------------------------
+ * 揺れ検知イベント(shakeDetection.tsのShakeDetectionEngineが生成するイベント)
+ * から、検知時刻・震度(揺れの広がり方・その方向)を手がかりにして震源
+ * (緯度・経度・深さ・発生時刻)を推定する。
+ *
+ * 参考文献:
+ * - 「揺れ検知から震央を検出してみる」(https://note.com/kotoho7/n/n59e423877b1b)
+ *   のGeiger法ベースの自己流アルゴリズムを当初のベースにした。
+ * - 堀内ほか(2007)「緊急地震速報のための即時震源決定手法の開発と今後の課題」
+ *   物理探査60(5), 399-406。着未着法(式(1))・解の安定性チェックの考え方。
+ * - 気象庁地震火山部「緊急地震速報の概要や処理手法に関する技術的参考資料」
+ *   (平成20年7月29日)。グリッドサーチ法(探索範囲の絞り方・全数探索)・
+ *   テリトリー法・検知点数が少ない場合の深さの扱い。
+ *
+ * 【アルゴリズムの概要】
+ *   - 初期仮震源(グリッド中心): 検知済み観測点を震度で重み付けした重心
+ *     (震度が高い観測点ほど震源に近いはず、という直感)。震度データが無い
+ *     場合は最初に検知した観測点にフォールバックする。
+ *   - 探索: 気象庁のグリッドサーチ法を参考に、グリッド中心から水平方向に
+ *     2度以内の範囲を、粗い間隔→細かい間隔(0.1度)の2段階で全数探索する
+ *     (反復移動=局所探索ではなく、全数探索にすることで開始点への依存を
+ *     無くしている。詳細は定数のコメント参照)。
+ *   - 深さ: 検知点数が少ない間は気象庁のテリトリー法にならい固定(10km)、
+ *     ある程度増えたら気象庁のグリッドサーチ法にならい上限付きで探索する
+ *     (詳細はbuildDepthCandidatesのコメント参照)。
+ *   - 誤差レベル: 到達時刻の重み付き分散に加えて、shakeTestSimulation.tsの
+ *     震度減衰式(calcPeakIntensity)を使い、観測された震度パターンを最も
+ *     よく説明できるマグニチュードを探索し、その残差をペナルティとして
+ *     加算する(computeAmplitudeCalibrationPenalty)。単純な「震度と距離の
+ *     順序が合っているか」の相関ではなく実際の非線形な減衰カーブを使うことで、
+ *     観測点が一方向(陸側)に偏る沖合の地震でも、震源までの絶対距離に
+ *     制約がかかるようにしている。
+ *   - 着未着法: 未検知観測点iについて、理論到達時刻Tiと現在時刻Tnowの間に
+ *     Tnow−Ti＜0が成立するはず、という制約(堀内ほか, 2007の式(1))を、
+ *     違反時の残差εi=Tnow−Tiを2乗して到達時刻の分散と同じ目的関数に
+ *     加算する形で実装している。
+ *   - 一意性チェック: 細かいグリッド探索で実際に評価済みの候補群の中から、
+ *     最良解と十分離れた場所にほぼ同じくらい良い候補が無いかを調べる
+ *     (堀内ほか, 2007の解の安定性チェックを参考。追加の評価コストなしで
+ *     既存の探索結果から判定できる)。
+ *   - 収束判定: `EpicenterEstimator`が「検知点数が一定以上」「推定位置が
+ *     しばらく動いていない(時間経過ベース)」「一意性チェックを満たす」の
+ *     3条件すべてを満たすまでconfirmed: falseを返す。
+ *
+ * 走時計算はJMA2001走時表を使わず、shakeTestSimulation.tsと同じ固定P波
+ * 速度モデル(震源距離÷速度)を流用している。テスト用シミュレーターと
+ * 震源推定ロジックの物理モデルを一致させることで、地震検知テスト機能
+ * (実験的機能)でこのモジュールの動作確認がしやすいようにするため。
+ *
+ * 【重い処理にならないための設計】
+ * - ここの関数はshakeDetection.tsのprocessTick()内からは呼ばない
+ *   (検知エンジン自体の毎tickコストを増やさないため、呼び出しは
+ *   App.jsx側の責務にする)。
+ * - estimateEpicenter()は状態を持たない純粋関数。EpicenterEstimatorは
+ *   イベントごとに「最後に推定した時の検知点数(pointCount)」を覚えておき、
+ *   点数が変化していなければ前回の結果をそのまま返す(=無駄な再計算をしない)。
+ * - 探索範囲をグリッド中心から2度以内に限定し、さらに粗い間隔→細かい間隔の
+ *   2段階探索にすることで、気象庁と同じ0.1度刻みの分解能を保ちつつ評価
+ *   候補数を現実的な数に抑えている(詳細はGRID_SEARCH_RADIUS_DEG等の
+ *   コメント参照)。
+ * - 検知点数が数百点規模に増えても計算コストが頭打ちになるよう、実際の
+ *   誤差レベル計算にはグリッド中心に近い上位MAX_STATIONS_FOR_ESTIMATION点
+ *   だけを使う(堀内ほか, 2007の「近傍20観測点程度に絞る」設計を参考)。
+ *   探索範囲自体を2度以内に構造的に限定したことで、この部分集合を
+ *   グリッド中心を基準に1回だけ選べば探索範囲全体をカバーできる(以前の
+ *   反復移動方式では、候補が大きく動きうるため各ステップで選び直す必要が
+ *   あった)。
+ * - 着未着法(未検知観測点のチェック)は、グリッド中心からUNDETECTED_
+ *   STATION_PREFILTER_RADIUS_KM以内の観測点だけを対象にする。
+ *
+ * 【検知点数が多い時に震源が沖合・深部へ暴走する不具合への対策(実運用報告
+ *   を踏まえた追加修正)】
+ * 実際のアプリで、検知点数が100点超に増えた際に震源が実際より大幅に沖合
+ * (西)・深部(探索上限の150km)にずれる不具合が報告された。原因は、
+ * 震源から遠い(情報量の乏しい)弱い観測点が大量に検知に加わると、個々の
+ * 重みが小さくても合計では近傍の少数の高震度観測点を上回ってしまい、震源が
+ * 観測点の「量」に引きずられること。対策として、(1) weightForDistanceを
+ * 反比例から二乗に変更して遠方観測点の影響をより強く抑える、(2)
+ * MAX_STATIONS_FOR_ESTIMATIONを100→50に引き下げる、(3) 深さの探索結果が
+ * 探索上限ちょうどに張り付いた場合(＝谷が探索範囲の外にある退化的な解の
+ * 疑いが強い)はuniquenessConfirmedをfalseにして収束扱いにしない、の3点を
+ * 実施した。
+ *
+ * 【上記の対策後も、震源が海域(観測網の外側)にある地震だけ誤差が大きく
+ *   残る不具合への追加対策(20節で置き換え済み、以下は経緯)】
+ * 上記3点の対策後の実運用報告で、震源が内陸の場合は良好に収束する一方、
+ * 震源が海域(観測点が片側=陸側にしか無い)の場合は依然として水平誤差
+ * 100km超が残るケースが確認された。原因は「弱い遠方観測点の量」ではなく、
+ * 観測点が片側にしか無いこと自体(反対方向の裏付けとなるデータが構造的に
+ * 存在しない)。対策として、検知点群の方位角分布から「片側偏り」の度合いを
+ * 判定し、偏りが大きいほどグリッド中心から離れた候補に懐疑的になる正則化
+ * (ソフトな加算ペナルティ)を誤差レベルに追加した。
+ *
+ * 【20節: グリッド中心の見直し・片側偏り補正のハード化】
+ * 上記のソフトな正則化を導入した後も、(a) 海域の震源で誤差100km超が
+ * 残るケースが続いたこと、(b) むしろ内陸の震源でも推定が海側にズレる
+ * 退行が新たに確認されたこと、の2点が実運用で報告された。(b)の原因として、
+ * グリッド中心(震度重み付き重心)自体が観測点配置(検知点が陸側だけ)に
+ * よって系統的にズレており、ソフトな正則化がその「ズレた中心」への
+ * 収束を後押ししてしまっていた可能性が疑われた。対策として、
+ * (1) グリッド中心を、震度重み付き重心から「最初に検知した観測点」
+ * (気象庁のグリッドサーチ法と同じ)に変更し、単一観測点の系統的バイアス
+ * の少なさを活かす、(2) 片側偏り補正を、誤差レベルへの加算(ソフト)から、
+ * 空白方位側の候補をそもそも探索対象から除外する制約(ハード、
+ * isCandidateAllowedByGap)に変更する、の2点を実施した。テリトリー法
+ * ベースの観測点分類(観測点マスタからのVoronoi分割による内部/外部/孤立
+ * 観測点の事前計算)は、上記2点でも改善が不十分な場合の次の一手として
+ * 未着手のまま残している。
+ */
+
+import { P_WAVE_SPEED_KM_S, calcPeakIntensity } from "./shakeTestSimulation";
+
+// 仮震源の初期値
+const INITIAL_DEPTH_KM = 10;
+const ORIGIN_TIME_FALLBACK_OFFSET_MS = 2000; // 重み計算が成立しない場合のフォールバックにのみ使用
+
+// 誤差レベル計算時の重み: この震央距離(km)以内は重み1に固定する
+const NEAR_STATION_FIXED_WEIGHT_RADIUS_KM = 50;
+
+// 着未着法を有効にする条件
+const UNDETECTED_CHECK_MAX_ELAPSED_MS = 3000;
+const UNDETECTED_CHECK_MAX_POINTS = 30;
+const UNDETECTED_CHECK_MARGIN_KM = 30;
+
+// 揺れの広がり方(震度の減衰パターン)による誤差レベルへのペナルティの重み。
+// 到達時刻の分散(ms^2オーダー、状況により数百〜数十万)と足し合わせて使うため、
+// 極端に小さいと影響力が無く、極端に大きいと震度データのノイズに引っ張られ
+// 過ぎてしまう。着未着法のペナルティ(到達時刻の残差と同じms²単位)と同程度〜
+// やや強めのオーダーを目安に、暫定的にこの値にしている(要調整)。
+const AMPLITUDE_PENALTY_WEIGHT = 4000;
+// マグニチュード探索の最低点数(点数が少なすぎると最良マグニチュードの
+// フィットが不安定になるため)。
+const MIN_POINTS_FOR_AMPLITUDE_CHECK = 3;
+// 震度で重み付けした重心(グリッド中心)を計算する際、上位何点までを使うか。
+// 理由はcomputeAmplitudeWeightedCentroidのコメントを参照。
+const CENTROID_TOP_K = 15;
+// 「観測された震度パターンに最も合うマグニチュード」を粗く探索するための
+// 候補値。0.5刻み(旧実装は[3.5,4.5,5.5,6.5,7.5]という1.0刻みの配列になって
+// おり、コメントと実装が食い違っていた不具合を修正)。精度はあくまで粗く、
+// マグニチュードそのものの推定精度を目的にしていない点は変わらない。
+const CALIBRATION_MAGNITUDE_CANDIDATES = [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5];
+
+// 震源推定として意味のある最低検知点数(これ未満はnullを返す)
+const MIN_DETECTION_POINTS = 2;
+
+/* ─────────────────────────────────────────────────────
+   グリッドサーチ(気象庁「緊急地震速報の概要や処理手法に関する技術的参考
+   資料」のグリッドサーチ法を参考)
+   ───────────────────────────────────────────────────── */
+
+// 探索範囲(グリッド中心からこの度数以内)。気象庁のグリッドサーチ法は
+// 「最初に検知した観測点から2度以内」に探索範囲を限定している。当アプリの
+// 旧実装(反復移動+初期仮震源から600km以内という緩い安全弁)では、実際の
+// アプリで海域の地震が数百km単位でずれる不具合が解消されなかったため、
+// 気象庁の実運用に合わせて2度まで厳格化した。
+const GRID_SEARCH_RADIUS_DEG = 2.0;
+
+// 粗い探索の間隔。2.0÷0.4=5なので、-2.0〜+2.0を0.4刻みで1辺11グリッド、
+// 計121グリッド(×深さ候補数)を全数評価する。
+const COARSE_GRID_STEP_DEG = 0.4;
+
+// 細かい探索の間隔(気象庁と同じ0.1度)。粗い探索の最良点の周辺だけをこの
+// 間隔で細かく探索する2段階方式にしている。
+//
+// 【なぜ2度四方をいきなり0.1度刻みで全数探索しないか】
+// 気象庁の実装(堀内ほか, 2007)は、震央距離計算のテイラー近似・走時表化等の
+// 専用の高速化を行っており、多数の候補を高速に評価できる前提と考えられる。
+// 当アプリのcomputeErrorLevel(マグニチュード探索・着未着法を含む)は1回の
+// 評価コストがそれなりに大きいため、2度四方を一律0.1度刻みで全数探索する
+// (候補数は水平だけで1辺41グリッド=1681、深さを掛けると数千〜1万超)と
+// 実用的な速度を保てない。そこで粗い間隔でまず全体を見渡し、有望な領域
+// だけを気象庁と同じ分解能(0.1度)で細かく探索する。
+const FINE_GRID_STEP_DEG = 0.1;
+
+// 細かい探索を行う範囲(粗い探索の最良点からこの度数以内)。粗い探索の間隔
+// (0.4度)より広く取り、粗い探索の格子の隙間に真の最良点があった場合でも
+// 細かい探索で拾えるようにしている。
+const FINE_GRID_RADIUS_DEG = 0.6;
+
+/* ─────────────────────────────────────────────────────
+   深さの探索候補(気象庁のテリトリー法・グリッドサーチ法における、検知点数
+   に応じた深さの扱いを参考)
+   ───────────────────────────────────────────────────── */
+
+// 検知点数がこれ以下の間は、深さをINITIAL_DEPTH_KM(10km)に固定する
+// (探索しない)。気象庁のテリトリー法(1〜2点処理)は、この段階では深さを
+// 決定せず「防災対応の観点から揺れの強さが大きく算出される10km」に固定
+// している。当アプリでも、検知点数が少ない間に深さまで探索しようとすると、
+// 緯度経度の探索が深さの初期値のズレに引っ張られて誤った方向へ向かう
+// 不安定さが13節・14節の検証で確認されているため、そもそも動かさない
+// ことでこれを回避する。
+const FEW_POINTS_MAX_FOR_FIXED_DEPTH = 2;
+
+// 検知点数がこれ以下の間は、深さの探索上限をSOME_POINTS_MAX_DEPTH_KMに
+// 制限する。気象庁のグリッドサーチ法(3〜5点処理)は「3、4点処理では130km
+// より深い候補は震源決定に用いない」としている(複数観測点でほぼ同時刻に
+// 検知された場合、浅い直下型地震を遠方の深発地震と誤認するのを防ぐため)。
+const SOME_POINTS_MAX_FOR_DEPTH_CAP = 4;
+const SOME_POINTS_MAX_DEPTH_KM = 130;
+
+// 検知点数が十分に増えた場合の深さ探索上限。日本近海で震度5弱以上の
+// 被害をもたらす地震は深さ120kmを超えて観測されたことがほぼ無いとされる
+// ため、余裕を見て150kmを上限にしている。
+const MANY_POINTS_MAX_DEPTH_KM = 150;
+
+// 検知点数に応じた深さ探索の上限(km)を返す。buildDepthCandidates()と
+// estimateEpicenter()の「深さが探索上限に張り付いていないか」チェックの
+// 両方から参照する共通ロジック(元はbuildDepthCandidates内に直書きして
+// いたが、チェック側でも全く同じ判定基準が必要になったため関数化した)。
+// 検知点数がFEW_POINTS_MAX_FOR_FIXED_DEPTH以下の間は深さを固定するため
+// nullを返す(＝「上限に張り付く」という概念自体が当てはまらない)。
+function maxDepthForPointCount(pointCount) {
+  if (pointCount <= FEW_POINTS_MAX_FOR_FIXED_DEPTH) return null;
+  return pointCount <= SOME_POINTS_MAX_FOR_DEPTH_CAP ? SOME_POINTS_MAX_DEPTH_KM : MANY_POINTS_MAX_DEPTH_KM;
+}
+
+// 粗い探索・細かい探索それぞれで使う深さ候補のリストを、検知点数に応じて
+// 返す。stageは"coarse"または"fine"、coarseBestDepthKmは"fine"の場合のみ
+// 使う(粗い探索で見つかった最良深さ)。
+function buildDepthCandidates(pointCount, stage, coarseBestDepthKm) {
+  if (pointCount <= FEW_POINTS_MAX_FOR_FIXED_DEPTH) {
+    return [INITIAL_DEPTH_KM];
+  }
+  const maxDepth = maxDepthForPointCount(pointCount);
+  if (stage === "coarse") {
+    return [10, 50, 90, 130].filter(d => d <= maxDepth);
+  }
+  const offsets = [-20, -10, 0, 10, 20];
+  const candidates = [...new Set(offsets.map(o => coarseBestDepthKm + o).filter(d => d >= 0 && d <= maxDepth))];
+  return candidates.length > 0 ? candidates : [Math.min(coarseBestDepthKm, maxDepth)];
+}
+
+/* ─────────────────────────────────────────────────────
+   検知点・未検知観測点の絞り込み(性能対策)
+   ───────────────────────────────────────────────────── */
+
+// 誤差レベル計算に実際に使う観測点数の上限(堀内ほか, 2007の「近傍20観測点
+// 程度に絞って計算する」設計を参考)。検知点数が数百点規模に増えると、
+// 候補ごとの評価コストが検知点数に比例して増え続け、1回の推定に200ms超
+// かかることを計測で確認した(検知点数500点・全観測点4000点超の条件)。
+// 震源決定に使う情報量は震源から遠い観測点ほど(weightForDistanceで重みが
+// 小さくなる分)相対的に乏しいため、グリッド中心に近い観測点から優先的に
+// 選んだ上位N点だけを計算に使うようにし、検知点数が増えてもコストが
+// 頭打ちになるようにしている。
+//
+// 探索範囲をGRID_SEARCH_RADIUS_DEG(2度)以内に限定したことで、グリッド
+// 中心を基準に1回だけ選んだ部分集合で探索範囲全体をカバーできる(以前の
+// 反復移動方式では候補位置が大きく動きうるため、各ステップで候補位置を
+// 基準に選び直す必要があった。そうしないとノイズを含む実データに近い条件で
+// 絞り込み無しの場合よりかえって大きく発散する=最大337kmの不具合を検証で
+// 確認していた)。
+// (pointCountとして返す検知点数そのものは、この絞り込みの影響を受けず
+// 実際の検知点数を返す。)
+//
+// 【100点→50点に引き下げ】
+// weightForDistanceを二乗にしたことで遠方観測点1点あたりの影響力は
+// 抑えられたが、実運用の報告(検知点数112点で誤差181km)では、それでも
+// 「弱い遠方観測点の数の多さ」自体が無視できない規模だった。堀内ほか,
+// 2007の「近傍20観測点程度」により近づけつつ、極端な絞り込みによる
+// 情報不足(検知点が少ない早い段階の精度低下)とのバランスを取り、
+// 50点を暫定値とする(要調整)。
+const MAX_STATIONS_FOR_ESTIMATION = 50;
+
+// 着未着法で未検知観測点を探す範囲の上限(km)。全観測点マスタが全国規模
+// (数千点)の場合、候補ごとに全点との距離を計算すると非常に重くなるため、
+// グリッド中心を基準にこの距離以内にある未検知観測点だけを候補リストとして
+// 絞り込んでおく。探索範囲(2度、方位によって概ね180〜220km)に、着未着法
+// 自体の探索マージン(UNDETECTED_CHECK_MARGIN_KM)と余裕を足した値。
+const UNDETECTED_STATION_PREFILTER_RADIUS_KM = 250 + UNDETECTED_CHECK_MARGIN_KM;
+
+/* ─────────────────────────────────────────────────────
+   収束判定・一意性チェック
+   ───────────────────────────────────────────────────── */
+
+// 「収束判定」(EpicenterEstimatorのconfirmedフラグ)用のパラメータ。
+// 検知点数が少ない早い段階では、震源推定は大きくぶれることがある(実データに
+// 近い条件での検証で、震源から150km以上沖の大きめの地震では、検知点数が
+// 20点程度に増えるまで推定位置が100km以上動くケースを確認済み)。そのため、
+// 「検知点数が一定以上」かつ「推定位置がしばらく動いていない」の両方を
+// 満たすまでは、地図上でも「参考値」であることが分かるよう薄く表示する
+// (App.jsx側のconfirmedプロパティで判定)。
+const CONVERGENCE_STABLE_MS = 5000; // この時間、推定位置が動かなければ「安定」とみなす
+const CONVERGENCE_POSITION_TOLERANCE_KM = 10; // この距離未満の移動は「動いていない」とみなす
+const MIN_CONFIRMED_POINTS = 8; // 検知点数がこれ未満の間は、安定していてもconfirmedにしない
+
+// 「解の一意性チェック」(堀内ほか, 2007を参考)用のパラメータ。細かい
+// グリッド探索(FINE_GRID_STEP_DEG刻み)で実際に評価した候補群の中から、
+// 最良解からUNIQUENESS_MIN_DISTANCE_KM以上離れた候補を対象に、誤差レベルが
+// 最良解のUNIQUENESS_RATIO_THRESHOLD倍以内のものが無いかを調べる。あれば
+// 「たまたま一番良かっただけ」で一意に定まっているとは言えないと判断し、
+// uniquenessConfirmed: falseとする。細かいグリッド探索で既に評価済みの
+// 候補を再利用するため、追加の計算コストはほぼゼロ(以前の実装は最良解の
+// 周囲に専用の90点グリッドを追加で評価していたが、その必要が無くなった)。
+// 最良解のごく近傍(細かいグリッド探索の間隔0.1度=概ね11kmの、数グリッド分
+// 程度)は、そもそも滑らかな誤差曲面の同じ谷の中にある「同じ解の一部」と
+// みなして除外する距離。当初15kmで試したところ、実データに近いノイズを
+// 含む条件で、単に隣接するグリッド点(0.1度刻みで2マス分、約17.5km)が
+// 最良解よりわずかに(1割強)誤差が大きいだけで「別の解」と誤判定され、
+// 一意性チェックが常に不成立になる(＝いつまでもconfirmedにならない)ことを
+// 確認した。滑らかな誤差曲面では最良解に近いグリッド点ほど誤差が近くなるのは
+// 当然であり、これは「本当に別の、比較可能な良さの解が存在する」ことを
+// 意味しない。そこで、細かいグリッドの間隔より十分大きい40kmまで緩和し、
+// 本当に離れた場所にある別解だけを検出するようにしている。
+const UNIQUENESS_MIN_DISTANCE_KM = 40;
+// 誤差レベルがこの倍率以内なら「ほぼ同じくらい良い」とみなす。
+const UNIQUENESS_RATIO_THRESHOLD = 1.3;
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// shakeTestSimulation.tsのtravelTimeMsと同じ考え方(震源距離÷速度)。
+// P波/S波の判別はせず、常にP波速度モデルを使う(記事同様の簡略化)。
+function travelTimeMs(distKm, depthKm) {
+  const distHypo = Math.sqrt(distKm * distKm + depthKm * depthKm);
+  return (distHypo / P_WAVE_SPEED_KM_S) * 1000;
+}
+
+// 到達時刻の分散・震度較正ペナルティ・重み付き発生時刻の共通の重み関数。
+//
+// 【なぜ反比例(1/distKm)ではなく二乗(1/distKm²)にしたか】
+// 実運用で報告された不具合(秋田県沖M5.8のシミュレーションで、検知点数が
+// 112点に増えた時点で、推定震源が実際の震源よりさらに西の沖合(誤差約
+// 181km)・深さが上限の150km(誤差+130km)に張り付く)を調査した結果、
+// 反比例の重みでは減衰が緩すぎ、震源から遠い(＝個々の情報量は乏しい)
+// 弱い揺れの観測点が数十〜100点規模で大量に加わると、重みの合計が近傍の
+// 少数の高震度観測点(震源位置の主な手がかり)を上回ってしまい、震源が
+// 観測点の「量」に引きずられる(震度較正ペナルティ側でも、遠方の弱い
+// 観測点が多いほど、より深い震源+より大きいマグニチュードの組み合わせで
+// 「そこそこ説明がついてしまう」退化的な解に流れやすくなる)ことを確認した。
+// 二乗にすることで、震源距離が2倍の観測点の影響力を4分の1に(反比例の
+// 半分)に抑え、近傍観測点の相対的な発言力を確保する。
+function weightForDistance(distKm, firstDistKm) {
+  if (distKm <= NEAR_STATION_FIXED_WEIGHT_RADIUS_KM) return 1;
+  const ratio = firstDistKm / Math.max(distKm, 0.001);
+  return ratio * ratio;
+}
+
+// 2点間の方位角(bearing、度、真北=0、時計回り)。
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  let brng = Math.atan2(y, x) * 180 / Math.PI;
+  if (brng < 0) brng += 360;
+  return brng;
+}
+
+// 中心点から見た観測点群の方位角の「最大の空白(ギャップ)」を求める
+// (気象庁のテリトリー法における「外部・孤立観測点」判定の考え方を、
+// 単一の指標に簡略化したもの)。観測点が全方位にまんべんなく分布して
+// いればギャップは小さく(内陸の地震で典型)、観測点が片側(陸側)だけに
+// 集中していれば、反対側(海側)の方位に大きなギャップが生じる。
+// gapStartBearing→gapEndBearing(時計回り)が、観測点が存在しない
+// 空白の方位範囲。
+//
+// 【なぜこれが必要か】
+// 実運用で、震源が海域(観測網の外側)にある地震で、震源推定が実際より
+// さらに沖合・深部にずれる不具合が繰り返し報告された(検知点数が多い
+// ケースはweightForDistance・MAX_STATIONS_FOR_ESTIMATIONの見直しで
+// ある程度緩和したが、依然として誤差100km超が残るケースがあった)。
+// 原因は、観測点が片側(陸側)だけにしか無い場合、反対方向(海側)への
+// 震源の移動を「否定する」データが構造的に存在しないこと。震度較正
+// ペナルティ(絶対減衰カーブ)は距離への制約にはなるが、方向そのものを
+// 制約する情報源ではないため、海側へ動かしつつ深さ・マグニチュードを
+// 調整することである程度まで「説明がついてしまう」退化的な解が残って
+// しまう。
+function computeAzimuthalGapInfo(stations, centerLat, centerLon) {
+  if (!stations || stations.length < 2) return { gapDeg: 360, gapStartBearing: 0, gapEndBearing: 360 };
+  const bearings = stations.map(s => bearingDeg(centerLat, centerLon, s.lat, s.lon)).sort((a, b) => a - b);
+
+  let maxGap = 0, gapStartBearing = 0, gapEndBearing = 0;
+  for (let i = 0; i < bearings.length; i++) {
+    const next = bearings[(i + 1) % bearings.length];
+    const gap = (i === bearings.length - 1) ? (360 - bearings[i] + bearings[0]) : (next - bearings[i]);
+    if (gap > maxGap) { maxGap = gap; gapStartBearing = bearings[i]; gapEndBearing = next; }
+  }
+  return { gapDeg: maxGap, gapStartBearing, gapEndBearing };
+}
+
+// bearingDegがstart→end(時計回り、360度をまたぐ場合あり)の空白方位範囲に
+// 入っているかどうか。
+function isBearingInGapArc(bearingDeg, start, end) {
+  if (start <= end) return bearingDeg >= start && bearingDeg <= end;
+  return bearingDeg >= start || bearingDeg <= end;
+}
+
+// 方位角ギャップがこの値未満なら「片側偏り」とはみなさない(内陸の地震でも
+// 観測点配置によってはある程度のギャップは普通に生じるため、通常の
+// ばらつきまで制限してしまわないようにする)。
+const ONE_SIDED_GAP_MIN_DEG = 150;
+// 方位角ギャップがこの値以上で、制限の強さが最大になる
+// (観測点がほぼ一方向にしか無い、最も極端な片側偏り)。
+const ONE_SIDED_GAP_MAX_DEG = 300;
+// 片側偏りが最大(factor=1)の時に、空白方位側の探索半径を通常の何割まで
+// 縮めるか。1.0にすると空白方位を完全に探索禁止にしてしまい、実際に
+// 海域で発生した正当な地震まで検出できなくなるため、上限を設ける
+// (要調整)。
+const ONE_SIDED_MAX_SHRINK_FRACTION = 0.65;
+
+// 【ソフトなペナルティからハードな制約への変更】
+// 当初(20節時点)は、方位角ギャップに応じてグリッド中心からの距離の2乗に
+// 比例するペナルティを誤差レベルに加算する「ソフトな正則化」だった。
+// しかし実運用では効果が乏しく(海域の地震での誤差はほぼ改善せず)、
+// 内陸の地震でもグリッド中心が(観測点の偏りにより)実際の震源からずれて
+// いる場合に、誤った位置への「お墨付き」を与えてしまう副作用も確認された。
+// そのため、誤差レベルへの加算ではなく、空白方位側の候補をそもそも
+// 探索対象から除外する(ハードな制約にする)方式に変更した。
+//
+// lat/lonの候補が、gridCenterを基準にした片側偏りの制約内かどうかを返す。
+// normalRadiusKmは片側偏りが無い場合の通常の探索半径(km、目安)。
+function isCandidateAllowedByGap(lat, lon, gridCenterLat, gridCenterLon, gapInfo, normalRadiusKm) {
+  if (!gapInfo || gapInfo.gapDeg <= ONE_SIDED_GAP_MIN_DEG) return true;
+  const bearing = bearingDeg(gridCenterLat, gridCenterLon, lat, lon);
+  if (!isBearingInGapArc(bearing, gapInfo.gapStartBearing, gapInfo.gapEndBearing)) return true;
+  const factor = Math.min(1, Math.max(0, (gapInfo.gapDeg - ONE_SIDED_GAP_MIN_DEG) / (ONE_SIDED_GAP_MAX_DEG - ONE_SIDED_GAP_MIN_DEG)));
+  const allowedKm = normalRadiusKm * (1 - factor * ONE_SIDED_MAX_SHRINK_FRACTION);
+  const distKm = haversineKm(gridCenterLat, gridCenterLon, lat, lon);
+  return distKm <= allowedKm;
+}
+
+// 震度(level)を、相対的な重み付けに使えるPGV相当値に変換する。
+// shakeTestSimulation.tsのcalcPeakIntensity(intensity = 2.68 + 1.72*log10(pgv))
+// の逆関数で、絶対値としての精度は求めていない(観測点間の相対比較にのみ使う)。
+// 震度が高い観測点ほど指数的に大きな重みになる。
+function pgvWeightForLevel(level) {
+  return Math.pow(10, (level - 2.68) / 1.72);
+}
+
+// 【20節時点では未使用】グリッド中心を「最初に検知した観測点」に一本化した
+// (20.2)ため、現在はestimateEpicenterから呼ばれていない。将来、方位角
+// ギャップが小さい(観測点配置が良好な)場合だけ重心を使うハイブリッド案
+// (20節の未決定事項)を試す際に再利用する可能性があるため、関数自体は
+// 残してある。
+//
+// 検知済み観測点を震度(level)で重み付けした重心を求める。震度が高い(揺れが
+// 強い)観測点ほど震源に近いはず、という直感を仮震源の初期位置(グリッド
+// 中心)に反映させるためのもの。levelを持たない観測点しかない場合はnullを
+// 返す(呼び出し側で最初に検知した観測点にフォールバックする)。
+//
+// 【なぜ全検知点ではなく上位数点だけを使うか】
+// 当初は検知済み全点を使って重み付き重心を計算していたが、検知点数が
+// 増えるにつれて震源から遠い(弱い)観測点が大量に加わり、個々の重みは
+// 小さくても合計では無視できない影響力を持ってしまい、重心が観測網の
+// 「多い側」(陸側)へ引きずられていく不具合を検証で確認した(150km沖の
+// ケースで、検知点数12点では重心が真の震源から209km、487点まで増えると
+// 277kmまでずれ、GRID_SEARCH_RADIUS_DEG(2度、概ね200km強)の探索範囲から
+// 真の震源が完全に外れてしまっていた)。震度が高い(＝震源に近いと考えられる)
+// 上位CENTROID_TOP_K点だけに絞ることで、大量の弱い遠方観測点による希釈・
+// 偏りを防ぐ。
+function computeAmplitudeWeightedCentroid(detections) {
+  const withLevel = detections.filter(d => d.level != null);
+  if (withLevel.length === 0) return null;
+  const top = [...withLevel].sort((a, b) => b.level - a.level).slice(0, CENTROID_TOP_K);
+
+  let sumLat = 0, sumLon = 0, sumWeight = 0;
+  for (const d of top) {
+    const w = pgvWeightForLevel(d.level);
+    sumLat += d.lat * w;
+    sumLon += d.lon * w;
+    sumWeight += w;
+  }
+  if (sumWeight <= 0) return null;
+  return { lat: sumLat / sumWeight, lon: sumLon / sumWeight };
+}
+
+// 揺れの広がり方(震度の減衰パターン)が、候補震源(位置・深さ)から見て
+// 物理的にもっともらしいかを評価する。shakeTestSimulation.tsの震度減衰式
+// (calcPeakIntensity)を使い、観測された震度パターンに最もよく合う
+// マグニチュードを粗く探索した上で、その残差(二乗誤差の重み付き合計)を
+// ペナルティにする。単純な「震度と距離の順序が合っているか」の相関ではなく、
+// 実際の減衰カーブ(非弾性減衰項を含む、距離が伸びるほど加速する非線形
+// カーブ)を使うことで、観測点が一方向(陸側)に偏っている沖合の地震でも、
+// 候補を沖へ動かしすぎると(実際の震度パターンに対して)説明が悪くなるように
+// し、震源までの絶対距離にも制約がかかるようにしている。
+//
+// 到達時刻の分散(computeErrorLevel内)と同じweightForDistanceを使い、遠い
+// 観測点ほど重みを小さくする。これが無いと、実際の地震で揺れが広がるにつれて
+// 遠方の(震源に近い観測点に比べて相対的にノイズが乗りやすい)観測点が
+// どんどん検知に加わっていったとき、それらが近傍の高震度観測点と対等な
+// 重みで残差に加算されてしまい、検知点数が増えるほど震源に近い・情報量の
+// 多い観測点の影響力が相対的に薄れて位置が不安定になる/収束しない不具合が
+// あった(実運用での報告により発覚、修正済み)。
+// 観測点数が少ない場合はフィットが不安定なため計算をスキップする(0を返す)。
+function computeAmplitudeCalibrationPenalty(candidate, detections, firstDistKm) {
+  if (detections.length < MIN_POINTS_FOR_AMPLITUDE_CHECK) return 0;
+
+  const withLevel = detections.filter(d => d.level != null);
+  if (withLevel.length < MIN_POINTS_FOR_AMPLITUDE_CHECK) return 0;
+
+  const distHypoByStation = [];
+  const weightByStation = [];
+  for (const d of withLevel) {
+    const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    distHypoByStation.push(Math.sqrt(distKm * distKm + candidate.depthKm * candidate.depthKm));
+    weightByStation.push(weightForDistance(distKm, firstDistKm));
+  }
+
+  let best = Infinity;
+  for (const m of CALIBRATION_MAGNITUDE_CANDIDATES) {
+    let sumSq = 0;
+    for (let i = 0; i < withLevel.length; i++) {
+      const predicted = calcPeakIntensity(m, candidate.depthKm, distHypoByStation[i]);
+      const diff = predicted - withLevel[i].level;
+      sumSq += weightByStation[i] * diff * diff;
+    }
+    if (sumSq < best) best = sumSq;
+  }
+
+  return AMPLITUDE_PENALTY_WEIGHT * best;
+}
+
+// 検知済み観測点群から、重み付き平均発生時刻を計算する。
+function computeWeightedOriginTime(candidate, detections, firstDistKm) {
+  let weightedSum = 0;
+  let weightSum = 0;
+  for (const d of detections) {
+    const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    const tt = travelTimeMs(distKm, candidate.depthKm);
+    const originTime = d.detectedAt - tt;
+    const weight = weightForDistance(distKm, firstDistKm);
+    weightedSum += originTime * weight;
+    weightSum += weight;
+  }
+  return weightSum > 0 ? weightedSum / weightSum : null;
+}
+
+// detectionsのうち、anchorLat/anchorLonに近い順にMAX_STATIONS_FOR_ESTIMATION
+// 点だけを選ぶ(検知点数が増えても計算コストが頭打ちになるようにするため。
+// 詳細はMAX_STATIONS_FOR_ESTIMATIONのコメント参照)。anchor(最初に検知した
+// 観測点)は、発生時刻・重み計算の基準として使われているため、選ばれなかった
+// 場合でも必ず含める。
+function selectNearestDetections(detections, anchorLat, anchorLon, anchor) {
+  if (detections.length <= MAX_STATIONS_FOR_ESTIMATION) return detections;
+  const withDist = detections.map(d => ({ d, dist: haversineKm(anchorLat, anchorLon, d.lat, d.lon) }));
+  withDist.sort((a, b) => a.dist - b.dist);
+  const selected = withDist.slice(0, MAX_STATIONS_FOR_ESTIMATION).map(x => x.d);
+  if (!selected.includes(anchor)) selected.push(anchor);
+  return selected;
+}
+
+/**
+ * 候補震源の誤差レベルを、到達時刻の重み付き分散と震度較正ペナルティ
+ * (揺れの広がり方)で計算する中コスト版。粗いグリッド探索(coarseステージ)
+ * 専用。
+ *
+ * 【なぜ到達時刻の分散だけでは不十分か】
+ * 当初は粗い探索を到達時刻の分散のみ(震度較正を省いた軽量版)で行っていたが、
+ * これは11節で修正したはずの「観測点が陸側に偏る沖合の地震で、震源が
+ * 実際より遠くの沖合まで推定される」問題を粗い探索の段階で再発させてしまい、
+ * 検知点数が増えるにつれて推定誤差が時間とともに単調に拡大する不具合(検証で
+ * 最大57km、150km沖のケース)を引き起こすことを確認した。震度較正ペナルティ
+ * (揺れの広がり方の手がかり)が無いと、到達時刻だけでは観測網が片側に偏る
+ * 状況での絶対距離を十分に制約できないため、粗い探索の段階から震度較正は
+ * 含める必要がある。
+ * 一方、着未着法(未検知観測点のループ)は候補ごとにO(未検知観測点数)の
+ * コストがかかり、かつ粗い探索の目的(有望な領域への絞り込み)には必須では
+ * ないため、これだけは省略して速度を確保している(最終的な精緻な判定は
+ * 着未着法も含むフルコスト版computeErrorLevelで行う)。
+ *
+ * 【片側偏り(海側等に観測点が無い)への対処について】
+ * 以前はここでgridCenterからの距離に応じたソフトな正則化ペナルティを
+ * 加算していたが、効果が乏しく副作用も見られたため、20節でハードな制約に
+ * 変更した。片側偏りの制約は、この関数を呼ぶ前(estimateEpicenter内の
+ * グリッド候補生成ループ)で、isCandidateAllowedByGapにより対象外の候補を
+ * そもそも評価しないことで実現している。そのためこの関数自体は片側偏りを
+ * 意識する必要が無く、以前の実装よりシンプルになっている。
+ */
+function computeCoarseErrorLevel(candidate, detections, firstDistKm) {
+  const meanOriginTime = computeWeightedOriginTime(candidate, detections, firstDistKm);
+  if (meanOriginTime == null) return Infinity;
+
+  let errorLevel = 0;
+  for (const d of detections) {
+    const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    const tt = travelTimeMs(distKm, candidate.depthKm);
+    const originTime = d.detectedAt - tt;
+    const weight = weightForDistance(distKm, firstDistKm);
+    const diff = originTime - meanOriginTime;
+    errorLevel += weight * diff * diff;
+  }
+  errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, firstDistKm);
+  return errorLevel;
+}
+
+/**
+ * 候補震源の誤差レベルを計算する(小さいほど実際の震源に近い)。
+ * 到達時刻の分散に加え、震度較正ペナルティ・着未着法も含むフルコスト版。
+ * 細かいグリッド探索(fineステージ)・一意性チェック専用。
+ * detections: [{id, lat, lon, detectedAt}] (最初に検知した観測点を含む)
+ * nearbyUndetectedStations: 着未着法用の、あらかじめ絞り込み済みの未検知
+ * 観測点候補([{id,lat,lon}, ...])。nullなら着未着法をスキップ。
+ * (片側偏りの制約は、この関数を呼ぶ前の候補生成側で処理済み。
+ * computeCoarseErrorLevelのコメント参照。)
+ */
+function computeErrorLevel(candidate, detections, firstDistKm, nearbyUndetectedStations, now) {
+  const meanOriginTime = computeWeightedOriginTime(candidate, detections, firstDistKm);
+  if (meanOriginTime == null) return Infinity;
+
+  let errorLevel = 0;
+  for (const d of detections) {
+    const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    const tt = travelTimeMs(distKm, candidate.depthKm);
+    const originTime = d.detectedAt - tt;
+    const weight = weightForDistance(distKm, firstDistKm);
+    const diff = originTime - meanOriginTime;
+    errorLevel += weight * diff * diff;
+  }
+
+  // 揺れの広がり方(震度の減衰パターン)による整合性ペナルティ。到達時刻の
+  // 分散だけでは区別しにくい候補同士(特に、観測点が一方向に偏っていて
+  // 絶対距離が決まりにくい沖合の地震)を、震度パターンの物理的な説明の
+  // 良さで追加的に絞り込む(詳細はcomputeAmplitudeCalibrationPenalty参照)。
+  errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, firstDistKm);
+
+  // 着未着法(堀内ほか, 2007の式(1)を参考): 検知初期(3秒以内、または検知
+  // 点数が30点未満)のみ、未検知観測点への制約を加える。未検知観測点iに
+  // ついて、理論到達時刻Tiと現在時刻Tnowの間にはTnow−Ti＜0が成立するはず
+  // (＝まだ届いていないなら、理論到達時刻は現在時刻より後のはず)。これが
+  // 破れる場合(Tnow≥Ti、＝もう届いているはずなのに未検知)の残差
+  // εi=Tnow−Tiを2乗し、そのままerrorLevelに加算する(単位は到達時刻の
+  // 分散と同じms²なので、特別な重み係数は不要)。
+  if (nearbyUndetectedStations) {
+    const firstDetectedAt = Math.min(...detections.map(d => d.detectedAt));
+    const elapsedSinceFirst = now - firstDetectedAt;
+    if (elapsedSinceFirst <= UNDETECTED_CHECK_MAX_ELAPSED_MS || detections.length < UNDETECTED_CHECK_MAX_POINTS) {
+      const detectedIds = new Set(detections.map(d => d.id));
+      for (const s of nearbyUndetectedStations) {
+        if (detectedIds.has(s.id)) continue;
+        const distKm = haversineKm(candidate.lat, candidate.lon, s.lat, s.lon);
+        const tt = travelTimeMs(distKm, candidate.depthKm);
+        const arrivalTime = meanOriginTime + tt;
+        const epsilon = now - arrivalTime; // > 0 なら「届いているはずなのに未検知」の違反
+        if (epsilon > 0) errorLevel += epsilon * epsilon;
+      }
+    }
+  }
+
+  return errorLevel;
+}
+
+/**
+ * イベントから震源を推定する(1回分の計算を行う純粋関数)。
+ *
+ * event: shakeDetection.tsのprocessTick()が返すイベント(detectionsフィールドを持つもの)。
+ * allStations: 着未着法用の全観測点マスタ([{id,lat,lon}, ...])。省略時は着未着法をスキップする。
+ * now: 現在時刻(ms)。省略時はDate.now()。
+ *
+ * 戻り値: { lat, lon, depthKm, originTime, errorLevel, pointCount, uniquenessConfirmed } | null
+ * (検知点数がMIN_DETECTION_POINTS未満の場合はnull=推定不能)。
+ * confirmed(収束したかどうか)はこの関数自体は状態を持たないため付与しない。
+ * EpicenterEstimator.updateAll()を経由した結果にのみconfirmed/stableForMsが
+ * 追加される。
+ */
+export function estimateEpicenter(event, allStations = null, now = Date.now()) {
+  const detections = event?.detections;
+  if (!detections || detections.length < MIN_DETECTION_POINTS) return null;
+
+  // 最初に検知した観測点(発生時刻の基準・重み計算の基準距離に使う)。
+  let first = detections[0];
+  for (const d of detections) {
+    if (d.detectedAt < first.detectedAt) first = d;
+  }
+
+  // 【20節: グリッド中心を「震度重み付き重心」から「最初に検知した観測点」に
+  //   変更】
+  // 以前は震度で重み付けした重心(computeAmplitudeWeightedCentroid)を
+  // グリッド中心にしていた。これは複数点の情報を使える利点がある一方、
+  // 「内陸に震源を置いても、検知点が片側(陸側)に偏っていると推定が海側に
+  // ズレる」という退行が実運用で確認された。原因の一つとして、重心自体が
+  // (検知した陸上の観測点だけで計算されるため)真の震源より系統的にズレた
+  // 位置に来てしまい、それを基準に探索するとズレを引きずってしまうことが
+  // 疑われる。気象庁のグリッドサーチ法は「最初に揺れた観測点」を中心に
+  // 2度以内を探索する、と明記されており、単一観測点は複数点の平均に比べて
+  // 系統的な偏りを持ちにくい。これに合わせ、常に最初に検知した観測点を
+  // グリッド中心にする。
+  const gridCenterLat = Math.round(first.lat * 100) / 100;
+  const gridCenterLon = Math.round(first.lon * 100) / 100;
+
+  // firstDistKmの再定義: 以前は「グリッド中心(重心)から最初の観測点までの
+  // 距離」だったが、グリッド中心=最初の観測点にしたため、この定義では常に
+  // 0になり重み関数(weightForDistance)が破綻する。代わりに「最初の観測点
+  // から見て空間的に最も近い、他の検知観測点までの距離」を使う。これは
+  // 観測点の局所的な密度を表す、同程度の意味を持つ基準距離になる。
+  let firstDistKm = null;
+  for (const d of detections) {
+    if (d === first) continue;
+    const dist = haversineKm(gridCenterLat, gridCenterLon, d.lat, d.lon);
+    if (firstDistKm == null || dist < firstDistKm) firstDistKm = dist;
+  }
+  if (firstDistKm == null || firstDistKm <= 0) firstDistKm = NEAR_STATION_FIXED_WEIGHT_RADIUS_KM;
+
+  // 誤差レベル計算に使う検知点・未検知観測点候補は、グリッド中心を基準に
+  // 1回だけ絞り込む(探索範囲がGRID_SEARCH_RADIUS_DEG以内に構造的に限定
+  // されているため、これで探索範囲全体をカバーできる。詳細は定数コメント
+  // 参照)。
+  const estimationDetections = selectNearestDetections(detections, gridCenterLat, gridCenterLon, first);
+  let nearbyUndetectedStations = null;
+  if (allStations) {
+    const detectedIdsFull = new Set(detections.map(d => d.id));
+    nearbyUndetectedStations = allStations.filter(s =>
+      !detectedIdsFull.has(s.id) &&
+      haversineKm(gridCenterLat, gridCenterLon, s.lat, s.lon) <= UNDETECTED_STATION_PREFILTER_RADIUS_KM
+    );
+  }
+
+  // 【20節: 片側偏り(海側等に観測点が無い)の制約をハード化】
+  // 検知観測点群の方位角ギャップは、グリッド中心を基準に1回だけ計算する
+  // (候補ごとに変わらないため)。isCandidateAllowedByGapで、空白方位側の
+  // 候補をそもそも評価対象から除外する。normalRadiusKmはGRID_SEARCH_RADIUS_DEG
+  // (度)をkmに概算したもの(1度≒111km、緯度による誤差は許容)。
+  const gapInfo = computeAzimuthalGapInfo(estimationDetections, gridCenterLat, gridCenterLon);
+  const normalSearchRadiusKm = GRID_SEARCH_RADIUS_DEG * 111;
+
+  const evalCoarse = (lat, lon, depthKm) =>
+    computeCoarseErrorLevel({ lat, lon, depthKm }, estimationDetections, firstDistKm);
+  const evalFine = (lat, lon, depthKm) =>
+    computeErrorLevel({ lat, lon, depthKm }, estimationDetections, firstDistKm, nearbyUndetectedStations, now);
+
+  // --- 粗い探索: グリッド中心から2度四方をCOARSE_GRID_STEP_DEG刻みで全数探索 ---
+  // 候補数が多いため、軽量版(到達時刻の分散のみ)で評価する。
+  const coarseDepths = buildDepthCandidates(detections.length, "coarse", null);
+  let coarseBest = { lat: gridCenterLat, lon: gridCenterLon, depthKm: coarseDepths[0], error: Infinity };
+  for (let dLat = -GRID_SEARCH_RADIUS_DEG; dLat <= GRID_SEARCH_RADIUS_DEG + 1e-9; dLat += COARSE_GRID_STEP_DEG) {
+    for (let dLon = -GRID_SEARCH_RADIUS_DEG; dLon <= GRID_SEARCH_RADIUS_DEG + 1e-9; dLon += COARSE_GRID_STEP_DEG) {
+      const lat = gridCenterLat + dLat;
+      const lon = gridCenterLon + dLon;
+      if (!isCandidateAllowedByGap(lat, lon, gridCenterLat, gridCenterLon, gapInfo, normalSearchRadiusKm)) continue;
+      for (const depthKm of coarseDepths) {
+        const error = evalCoarse(lat, lon, depthKm);
+        if (error < coarseBest.error) coarseBest = { lat, lon, depthKm, error };
+      }
+    }
+  }
+
+  // --- 細かい探索: 粗い探索の最良点の周辺だけをFINE_GRID_STEP_DEG(0.1度)刻みで探索 ---
+  // 候補数が絞られているため、フルコスト版(震度較正・着未着法込み)で評価する。
+  // 一意性チェック用に、評価した全候補(位置・誤差レベル)を記録しておく。
+  // 片側偏りの判定はグリッド中心基準なので、fineステージでもgridCenterからの
+  // 距離・方位で判定する(候補自体はcoarseBestの周辺で生成する)。
+  const fineDepths = buildDepthCandidates(detections.length, "fine", coarseBest.depthKm);
+  let fineBest = { lat: coarseBest.lat, lon: coarseBest.lon, depthKm: coarseBest.depthKm, error: Infinity };
+  const fineEvaluated = [];
+  for (let dLat = -FINE_GRID_RADIUS_DEG; dLat <= FINE_GRID_RADIUS_DEG + 1e-9; dLat += FINE_GRID_STEP_DEG) {
+    for (let dLon = -FINE_GRID_RADIUS_DEG; dLon <= FINE_GRID_RADIUS_DEG + 1e-9; dLon += FINE_GRID_STEP_DEG) {
+      const lat = coarseBest.lat + dLat;
+      const lon = coarseBest.lon + dLon;
+      if (!isCandidateAllowedByGap(lat, lon, gridCenterLat, gridCenterLon, gapInfo, normalSearchRadiusKm)) continue;
+      for (const depthKm of fineDepths) {
+        const error = evalFine(lat, lon, depthKm);
+        fineEvaluated.push({ lat, lon, depthKm, error });
+        if (error < fineBest.error) fineBest = { lat, lon, depthKm, error };
+      }
+    }
+  }
+
+  const best = { lat: Math.round(fineBest.lat * 100) / 100, lon: Math.round(fineBest.lon * 100) / 100, depthKm: fineBest.depthKm };
+
+  const originTime = computeWeightedOriginTime(best, estimationDetections, firstDistKm)
+    ?? (first.detectedAt - ORIGIN_TIME_FALLBACK_OFFSET_MS);
+
+  // 解の一意性チェック(堀内ほか, 2007を参考)。細かいグリッド探索で既に
+  // 評価済みの候補群から、最良解と十分離れた(UNIQUENESS_MIN_DISTANCE_KM
+  // 以上)場所にほぼ同じくらい良い候補(誤差レベルがUNIQUENESS_RATIO_
+  // THRESHOLD倍以内)が無いかを調べる。追加の評価コストはほぼゼロ。
+  let uniquenessConfirmed = true;
+  const uniquenessThreshold = fineBest.error * UNIQUENESS_RATIO_THRESHOLD;
+  for (const c of fineEvaluated) {
+    if (c.error > uniquenessThreshold) continue;
+    if (haversineKm(best.lat, best.lon, c.lat, c.lon) >= UNIQUENESS_MIN_DISTANCE_KM) {
+      uniquenessConfirmed = false;
+      break;
+    }
+  }
+
+  // 深さが探索上限に張り付いていないかのチェック(実運用で報告された不具合
+  // ケースを踏まえた追加のガード)。深さの探索は本来、誤差レベルが最小になる
+  // 「谷」で止まるはずであり、たまたま探索上限ちょうどが最良になるのは、
+  // 谷が上限の外側(探索範囲外)にある退化的な解である可能性が高い
+  // (震度の少ない・遠い観測点が大量にある場合、深さを大きくするほど
+  // 誤差が下がり続けてしまう問題があった)。この場合は一意性チェックと
+  // 同様にuniquenessConfirmedをfalseにし、収束扱いにしない。
+  const maxDepthAllowed = maxDepthForPointCount(detections.length);
+  if (maxDepthAllowed != null && best.depthKm >= maxDepthAllowed - 1e-6) {
+    uniquenessConfirmed = false;
+  }
+
+  return {
+    lat: best.lat,
+    lon: best.lon,
+    depthKm: best.depthKm,
+    originTime,
+    errorLevel: fineBest.error,
+    pointCount: detections.length,
+    uniquenessConfirmed,
+  };
+}
+
+/**
+ * イベントごとに最後に推定した検知点数(pointCount)を覚えておき、点数が
+ * 変化していなければ再計算せず前回の結果を使い回すキャッシュラッパー。
+ * あわせて、推定位置がどれだけの時間安定しているかを追跡し、「検知点数が
+ * 十分」「位置が動かなくなった(時間経過ベースの収束)」「周囲にほぼ同じ
+ * くらい良い解が無い(一意性チェック、堀内ほか, 2007を参考)」の3条件を
+ * 満たすかどうかを示すconfirmedフラグを結果に付与する(詳細は
+ * CONVERGENCE_STABLE_MS・UNIQUENESS_*等のコメント参照)。
+ * App.jsx側はshakeDetection.tsのprocessTick()の戻り値をそのままupdateAll()に
+ * 渡すだけでよい(震央検出のON/OFFや再計算タイミングを個別に管理する必要はない)。
+ */
+export class EpicenterEstimator {
+  constructor() {
+    this.cache = new Map(); // eventId -> { pointCount, result, stablePos, firstStableAt }
+  }
+
+  /**
+   * events: shakeDetection.tsのprocessTick()の戻り値。
+   * allStations: 着未着法用の全観測点マスタ。
+   * now: 現在時刻(ms)。収束判定(位置がどれだけ安定しているか)の基準に使うため、
+   * 呼び出し側のtickの実時刻を渡すことを想定している。
+   * 戻り値: Map<eventId, estimateEpicenter()の戻り値にconfirmedを追加したもの | null>
+   */
+  updateAll(events, allStations = null, now = Date.now()) {
+    const activeIds = new Set();
+    const results = new Map();
+
+    for (const event of events) {
+      activeIds.add(event.id);
+      let entry = this.cache.get(event.id);
+
+      let result;
+      if (entry && entry.pointCount === event.pointCount) {
+        result = entry.result;
+      } else {
+        result = estimateEpicenter(event, allStations, now);
+        entry = { pointCount: event.pointCount, result, stablePos: entry?.stablePos ?? null, firstStableAt: entry?.firstStableAt ?? now };
+      }
+
+      if (result) {
+        if (
+          !entry.stablePos ||
+          haversineKm(entry.stablePos.lat, entry.stablePos.lon, result.lat, result.lon) > CONVERGENCE_POSITION_TOLERANCE_KM
+        ) {
+          entry.stablePos = { lat: result.lat, lon: result.lon };
+          entry.firstStableAt = now;
+        }
+        const stableForMs = now - entry.firstStableAt;
+        const confirmed =
+          stableForMs >= CONVERGENCE_STABLE_MS &&
+          result.pointCount >= MIN_CONFIRMED_POINTS &&
+          !!result.uniquenessConfirmed;
+        result = { ...result, confirmed, stableForMs };
+      }
+
+      entry.result = result;
+      this.cache.set(event.id, entry);
+      results.set(event.id, result);
+    }
+
+    for (const id of this.cache.keys()) {
+      if (!activeIds.has(id)) this.cache.delete(id);
+    }
+
+    return results;
+  }
+}
