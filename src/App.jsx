@@ -15,7 +15,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.5.4";
+const APP_VERSION = "0.5.6";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1041,6 +1041,29 @@ function buildShakeEventFeatures(shakeEvents) {
   });
 }
 
+// 揺れ検知イベント(shakeEvents)に含まれる、個々の「検知済み観測点」
+// (event.detections、ShakeDetectionEngineが揺れ有りと判定した観測点の
+// 一覧)を、地図上に点として打つためのPoint Featureに変換する。
+// 同じ観測点が複数のイベントに(通常は起きないはずだが、念のため)重複して
+// 含まれていても地図上では1点にまとめたいので、観測点idで重複排除する。
+function buildDetectedStationFeatures(shakeEvents) {
+  const seen = new Set();
+  const features = [];
+  for (const e of shakeEvents) {
+    if (!e.detections) continue;
+    for (const d of e.detections) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      features.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [d.lon, d.lat] },
+        properties: { id: d.id },
+      });
+    }
+  }
+  return features;
+}
+
 // 2地点間の距離(km)。震源推定と地震検知テストの「正解」震源との誤差表示、
 // および震源推定マーカーの円描画で使う共通ヘルパー。
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -1850,6 +1873,35 @@ function MapCanvas({
             setSelectedRealtimePoint(e.features[0].properties);
           });
 
+          // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定された
+          // 観測点に打つ、縁が黒い白い点。realtime-points-layer(震度で色分け
+          // された点)の上に重なるよう、その直後に追加している。震源推定の
+          // マーカー(epicenter-estimates-layer、同じ白丸+黒縁のスタイル)より
+          // 見た目のインパクトを抑えるため、一回り小さいradiusにしている。
+          map.addSource("shake-detected-points", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "shake-detected-points-layer",
+            type: "circle",
+            source: "shake-detected-points",
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": [
+                "interpolate", ["linear"], ["zoom"],
+                4, 2,
+                7, 3.5,
+                10, 5.5,
+                14, 8,
+                18, 13,
+              ],
+              "circle-color": "#FFFFFF",
+              "circle-stroke-color": "#111111",
+              "circle-stroke-width": 1.5,
+            },
+          });
+
           map.on("mouseenter", "epicenter-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
           });
@@ -2088,6 +2140,15 @@ function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
+    // 検知済み観測点の白丸+黒縁マーカーも、揺れ検知イベントのレイヤーと
+    // 同じ条件(強震モニタ本体が表示されている間)で出す。
+    if (map.getLayer("shake-detected-points-layer")) {
+      map.setLayoutProperty(
+        "shake-detected-points-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
     // 震源推定マーカーも、強震モニタ本体+震源推定機能自体がONの間だけ出す。
     if (map.getLayer("epicenter-estimates-layer")) {
       map.setLayoutProperty(
@@ -2261,6 +2322,13 @@ function MapCanvas({
       shakeSource.setData({
         type: "FeatureCollection",
         features: buildShakeEventFeatures(shakeEvents),
+      });
+    }
+    const detectedPointsSource = map.getSource("shake-detected-points");
+    if (detectedPointsSource) {
+      detectedPointsSource.setData({
+        type: "FeatureCollection",
+        features: buildDetectedStationFeatures(shakeEvents),
       });
     }
     onShakeEventsChangeRef.current?.(shakeEvents);
