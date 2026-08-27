@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.1";
+const APP_VERSION = "0.6.2";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -13098,33 +13098,27 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
   const { tokens } = useContext(ThemeContext);
   const f = shakeTestForm;
   const running = shakeTests.length > 0;
-  // 「実際の震源との比較」は、同時に複数のシミュレーションが動いていると
-  // どの検知イベントがどのシミュレーションに対応するか一意に決められない
-  // ため、ちょうど1件だけ実行中の場合に限って表示する。
-  const compareTarget = shakeTests.length === 1 ? shakeTests[0].form : null;
 
-  // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、最も信頼できそうな
-  // ものを「テストとの比較対象」として1つ選ぶ。収束済み(confirmed)のものを
-  // 優先し、その中では検知点数が多いものを選ぶ。まだ収束済みが無ければ、
-  // 収束前の中で検知点数が最も多いものを暫定的に使う。通常はテスト中に発生する
-  // 揺れ検知イベントは1つだけのはずだが、複数ある場合の保険。
-  let bestEstimate = null;
-  if (compareTarget && epicenterEstimates) {
+  // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、各シミュレーション
+  // (実際の震源)に最も近いものを、そのシミュレーションとの比較対象として
+  // 選ぶ。複数のシミュレーションが同時実行されている場合でも、それぞれの
+  // 「実際の震源」に地理的に最も近い推定を対応付けることで、どの検知
+  // イベントがどのシミュレーションに対応するかを個別に判定する(11節の
+  // イベント統合対策により、近接する複数のシミュレーションが1つの検知
+  // イベントに統合されている場合は、同じ推定が複数のシミュレーションの
+  // 比較対象として選ばれることもある。これは統合が正しく機能している
+  // 証拠でもあるため、意図通りの挙動)。
+  function pickBestEstimateFor(form) {
+    if (!epicenterEstimates) return null;
+    let best = null;
+    let bestDistanceKm = Infinity;
     for (const est of epicenterEstimates.values()) {
       if (!est) continue;
-      if (!bestEstimate) { bestEstimate = est; continue; }
-      const estBetter = est.confirmed && !bestEstimate.confirmed;
-      const bestBetter = bestEstimate.confirmed && !est.confirmed;
-      if (estBetter) bestEstimate = est;
-      else if (!bestBetter && est.pointCount > bestEstimate.pointCount) bestEstimate = est;
+      const d = haversineKm(form.latitude, form.longitude, est.lat, est.lon);
+      if (d < bestDistanceKm) { bestDistanceKm = d; best = est; }
     }
+    return best;
   }
-  const distanceErrorKm = (compareTarget && bestEstimate)
-    ? haversineKm(compareTarget.latitude, compareTarget.longitude, bestEstimate.lat, bestEstimate.lon)
-    : null;
-  const depthErrorKm = (compareTarget && bestEstimate)
-    ? bestEstimate.depthKm - compareTarget.depth
-    : null;
 
   const inputStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
@@ -13278,73 +13272,90 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
         </>
       )}
 
-      {compareTarget && (
+      {running && (
         <>
           <div style={{ margin: "18px 14px 6px" }}>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: `rgba(${tokens.ink},0.7)` }}>
               実際の震源 と 検知した震源(推定)の比較
             </span>
           </div>
-          <SettingsCard>
-            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ display: "flex", gap: 8 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                    <span style={{
-                      display: "inline-block", width: 10, height: 10, transform: "rotate(45deg)",
-                      background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
-                    }} />
-                    <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>実際の震源</span>
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>
-                    北緯{compareTarget.latitude?.toFixed?.(2)}° ・ 東経{compareTarget.longitude?.toFixed?.(2)}°
-                  </div>
-                  <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
-                    深さ{compareTarget.depth}km
-                  </div>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                    <span style={{
-                      display: "inline-block", width: 10, height: 10, borderRadius: "50%",
-                      background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
-                    }} />
-                    <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>検知した震源(推定)</span>
-                  </div>
-                  {bestEstimate ? (
-                    <>
+          {shakeTests.map(t => {
+            const compareTarget = t.form;
+            const bestEstimate = pickBestEstimateFor(compareTarget);
+            const distanceErrorKm = bestEstimate
+              ? haversineKm(compareTarget.latitude, compareTarget.longitude, bestEstimate.lat, bestEstimate.lon)
+              : null;
+            const depthErrorKm = bestEstimate
+              ? bestEstimate.depthKm - compareTarget.depth
+              : null;
+            return (
+              <SettingsCard key={t.id}>
+                <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                  {shakeTests.length > 1 && (
+                    <div style={{ fontSize: 12, fontWeight: 700, color: `rgba(${tokens.ink},0.85)` }}>
+                      {compareTarget.place}・M{compareTarget.magnitude.toFixed(1)}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                        <span style={{
+                          display: "inline-block", width: 10, height: 10, transform: "rotate(45deg)",
+                          background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
+                        }} />
+                        <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>実際の震源</span>
+                      </div>
                       <div style={{ fontSize: 13, fontWeight: 700 }}>
-                        北緯{bestEstimate.lat.toFixed(2)}° ・ 東経{bestEstimate.lon.toFixed(2)}°
+                        北緯{compareTarget.latitude?.toFixed?.(2)}° ・ 東経{compareTarget.longitude?.toFixed?.(2)}°
                       </div>
                       <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
-                        深さ{Math.round(bestEstimate.depthKm)}km ・ 検知点数{bestEstimate.pointCount}
+                        深さ{compareTarget.depth}km
                       </div>
-                      <div style={{
-                        display: "inline-block", marginTop: 4, padding: "1px 6px", borderRadius: 4,
-                        fontSize: 10, fontWeight: 700,
-                        background: bestEstimate.confirmed ? "rgba(52,199,89,0.15)" : "rgba(255,149,0,0.15)",
-                        color: bestEstimate.confirmed ? "#248A3D" : "#B25000",
-                      }}>
-                        {bestEstimate.confirmed ? "収束済み" : "推定中(位置が変動する可能性あり)"}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                        <span style={{
+                          display: "inline-block", width: 10, height: 10, borderRadius: "50%",
+                          background: "#FFFFFF", border: "1.5px solid #111111", boxSizing: "border-box",
+                        }} />
+                        <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>検知した震源(推定)</span>
                       </div>
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.45)`, marginTop: 2 }}>
-                      まだ検知なし(「震源推定」設定がOFFの場合は表示されません)
+                      {bestEstimate ? (
+                        <>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>
+                            北緯{bestEstimate.lat.toFixed(2)}° ・ 東経{bestEstimate.lon.toFixed(2)}°
+                          </div>
+                          <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
+                            深さ{Math.round(bestEstimate.depthKm)}km ・ 検知点数{bestEstimate.pointCount}
+                          </div>
+                          <div style={{
+                            display: "inline-block", marginTop: 4, padding: "1px 6px", borderRadius: 4,
+                            fontSize: 10, fontWeight: 700,
+                            background: bestEstimate.confirmed ? "rgba(52,199,89,0.15)" : "rgba(255,149,0,0.15)",
+                            color: bestEstimate.confirmed ? "#248A3D" : "#B25000",
+                          }}>
+                            {bestEstimate.confirmed ? "収束済み" : "推定中(位置が変動する可能性あり)"}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.45)`, marginTop: 2 }}>
+                          まだ検知なし(「震源推定」設定がOFFの場合は表示されません)
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {bestEstimate && (
+                    <div style={{
+                      marginTop: 2, paddingTop: 10, borderTop: `1px solid rgba(${tokens.ink},0.08)`,
+                      fontSize: 12, color: `rgba(${tokens.ink},0.65)`,
+                    }}>
+                      誤差: 水平方向 約{distanceErrorKm.toFixed(1)}km ・ 深さ方向 {depthErrorKm >= 0 ? "+" : ""}{depthErrorKm.toFixed(0)}km
                     </div>
                   )}
                 </div>
-              </div>
-              {bestEstimate && (
-                <div style={{
-                  marginTop: 2, paddingTop: 10, borderTop: `1px solid rgba(${tokens.ink},0.08)`,
-                  fontSize: 12, color: `rgba(${tokens.ink},0.65)`,
-                }}>
-                  誤差: 水平方向 約{distanceErrorKm.toFixed(1)}km ・ 深さ方向 {depthErrorKm >= 0 ? "+" : ""}{depthErrorKm.toFixed(0)}km
-                </div>
-              )}
-            </div>
-          </SettingsCard>
+              </SettingsCard>
+            );
+          })}
         </>
       )}
     </>
