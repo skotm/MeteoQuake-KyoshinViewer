@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.2";
+const APP_VERSION = "0.6.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -13288,6 +13288,9 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
             const depthErrorKm = bestEstimate
               ? bestEstimate.depthKm - compareTarget.depth
               : null;
+            const magnitudeError = (bestEstimate && bestEstimate.magnitude != null)
+              ? bestEstimate.magnitude - compareTarget.magnitude
+              : null;
             return (
               <SettingsCard key={t.id}>
                 <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -13327,6 +13330,7 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
                           </div>
                           <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
                             深さ{Math.round(bestEstimate.depthKm)}km ・ 検知点数{bestEstimate.pointCount}
+                            {bestEstimate.magnitude != null && <> ・ M{bestEstimate.magnitude.toFixed(1)}(推定)</>}
                           </div>
                           <div style={{
                             display: "inline-block", marginTop: 4, padding: "1px 6px", borderRadius: 4,
@@ -13350,6 +13354,7 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
                       fontSize: 12, color: `rgba(${tokens.ink},0.65)`,
                     }}>
                       誤差: 水平方向 約{distanceErrorKm.toFixed(1)}km ・ 深さ方向 {depthErrorKm >= 0 ? "+" : ""}{depthErrorKm.toFixed(0)}km
+                      {magnitudeError != null && <> ・ M {magnitudeError >= 0 ? "+" : ""}{magnitudeError.toFixed(1)}</>}
                     </div>
                   )}
                 </div>
