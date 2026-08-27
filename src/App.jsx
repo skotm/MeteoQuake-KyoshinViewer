@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.6.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1121,14 +1121,14 @@ function buildTrueEpicenterDiamondCoords(lon, lat) {
   return [[lon, lat + dy], [lon + dx, lat], [lon, lat - dy], [lon - dx, lat], [lon, lat + dy]];
 }
 
-// trueEpicenter: { lat, lon } | null (地震検知テストが実行中でなければnull)
-function buildTrueEpicenterFeatures(trueEpicenter) {
-  if (!trueEpicenter) return [];
-  return [{
+// trueEpicenters: { lat, lon }[] (地震検知テストが実行中でなければ空配列)
+function buildTrueEpicenterFeatures(trueEpicenters) {
+  if (!trueEpicenters || trueEpicenters.length === 0) return [];
+  return trueEpicenters.map(trueEpicenter => ({
     type: "Feature",
     geometry: { type: "Polygon", coordinates: [buildTrueEpicenterDiamondCoords(trueEpicenter.lon, trueEpicenter.lat)] },
     properties: {},
-  }];
+  }));
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1165,9 +1165,10 @@ function MapCanvas({
   // イベントが発生しないため実質的に動作しない。
   epicenterEstimationEnabled = false,
   onEpicenterEstimateChange,
-  // 地震検知テスト(shakeTestSimulation.ts)実行中の「正解」の震源。
-  // { lat, lon, depthKm, magnitude } | null。テスト中でなければnull。
-  shakeTestTrueEpicenter = null,
+  // 地震検知テスト(shakeTestSimulation.ts)実行中の「正解」の震源(複数同時
+  // 実行に対応)。{ lat, lon, depthKm, magnitude }[]。テスト中でなければ
+  // 空配列。
+  shakeTestTrueEpicenters = [],
 }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
@@ -2156,9 +2157,10 @@ function MapCanvas({
     }
   }, [showRealtimeMapLayers, epicenterEstimationEnabled, status]);
 
-  // 地震検知テストの「正解」の震源(shakeTestTrueEpicenter)が変わるたびに、
-  // 菱形マーカー用のsourceを更新する。tickごとに動くものではないので、
-  // 揺れ検知の毎tick処理(下のuseEffect)とは分離している。
+  // 地震検知テストの「正解」の震源(shakeTestTrueEpicenters、複数同時実行に
+  // 対応)が変わるたびに、菱形マーカー用のsourceを更新する。tickごとに
+  // 動くものではないので、揺れ検知の毎tick処理(下のuseEffect)とは分離
+  // している。
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== "ready") return;
@@ -2166,9 +2168,9 @@ function MapCanvas({
     if (!source) return;
     source.setData({
       type: "FeatureCollection",
-      features: buildTrueEpicenterFeatures(shakeTestTrueEpicenter),
+      features: buildTrueEpicenterFeatures(shakeTestTrueEpicenters),
     });
-  }, [shakeTestTrueEpicenter, status]);
+  }, [shakeTestTrueEpicenters, status]);
 
   // 震度上昇中レイヤー用に、観測点ごとの「前回の震度値」を覚えておくスナップショット。
   // 閾値(realtimeIntensityThreshold)を変えても比較が崩れないよう、表示中/非表示中を
@@ -8231,6 +8233,7 @@ function BottomDock({
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
+  replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
@@ -8240,7 +8243,7 @@ function BottomDock({
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
-  shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
+  shakeTests, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
   epicenterEstimates,
   eews = EMPTY_EQDB_LIST, eewDetailOpen, eewOpenSignal, onOpenEewDetail, onCloseEewDetail,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
@@ -9799,6 +9802,7 @@ function BottomDock({
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={onChangeExperimentalFeaturesEnabled}
                   realtimeApiToken={realtimeApiToken}
+                  replayPlayer={replayPlayer}
                   onChangeRealtimeApiToken={onChangeRealtimeApiToken}
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={onChangeRealtimeRisingEnabled}
@@ -9819,7 +9823,7 @@ function BottomDock({
                   quakeTestForm={quakeTestForm}
                   quakeEpicenterPickActive={quakeEpicenterPickActive}
                   quakeTestAutoPlaying={quakeTestAutoPlaying}
-                  shakeTest={shakeTest}
+                  shakeTests={shakeTests}
                   onShakeTestAction={onShakeTestAction}
                   shakeTestForm={shakeTestForm}
                   shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
@@ -10243,122 +10247,6 @@ const SHINDO_THRESHOLD_TICKS = (() => {
   for (let v = Math.ceil(SHINDO_MIN_INTENSITY); v <= Math.floor(SHINDO_MAX_INTENSITY); v++) ticks.push(v);
   return ticks;
 })();
-
-/* ─────────────────────────────────────────────────────
-   REPLAY CONTROL PANEL
-   バックフィルサーバーで生成したリプレイファイルを読み込み、
-   再生/一時停止/シーク/速度変更を行うための小さなフローティングパネル。
-   ───────────────────────────────────────────────────── */
-function ReplayControlPanel({ replayPlayer }) {
-  const { tokens } = useContext(ThemeContext);
-  const fileInputRef = useRef(null);
-
-  const handleFileChange = (e) => {
-    const file = e.target.files?.[0];
-    if (file) replayPlayer.loadFile(file);
-    e.target.value = ""; // 同じファイルを選び直しても onChange が発火するように
-  };
-
-  const glassStyle = {
-    background: `rgba(${tokens.glassBg},0.85)`,
-    backdropFilter: "blur(20px)",
-    WebkitBackdropFilter: "blur(20px)",
-    borderRadius: 14,
-    border: `1px solid rgba(${tokens.ink},0.08)`,
-    boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
-    padding: "10px 12px",
-    fontSize: 12,
-    color: `rgba(${tokens.ink},0.85)`,
-    minWidth: 200,
-  };
-
-  if (!replayPlayer.loaded) {
-    return (
-      <div style={glassStyle}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".bin"
-          onChange={handleFileChange}
-          style={{ display: "none" }}
-        />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            background: "none", border: "none", padding: 0,
-            fontSize: 12, color: `rgba(${tokens.ink},0.85)`, cursor: "pointer",
-          }}
-        >
-          📂 リプレイファイルを読み込む
-        </button>
-        {replayPlayer.error && (
-          <div style={{ marginTop: 6, fontSize: 11, color: "#FF453A" }}>{replayPlayer.error}</div>
-        )}
-      </div>
-    );
-  }
-
-  const frameCount = replayPlayer.frames.length;
-  const current = replayPlayer.frames[replayPlayer.currentIndex];
-
-  return (
-    <div style={glassStyle}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>
-          {replayPlayer.fileName}
-        </span>
-        <button
-          onClick={replayPlayer.close}
-          style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, color: `rgba(${tokens.ink},0.5)`, padding: 0 }}
-          aria-label="リプレイを閉じる"
-        >
-          ✕
-        </button>
-      </div>
-
-      <div style={{ fontSize: 11, fontVariantNumeric: "tabular-nums", color: `rgba(${tokens.ink},0.6)`, marginBottom: 6 }}>
-        {current ? current.dataTime.toLocaleString("ja-JP", { hour12: false }) : "--"}
-        {"  ("}{replayPlayer.currentIndex + 1}/{frameCount}{")"}
-      </div>
-
-      <input
-        type="range"
-        min={0}
-        max={Math.max(0, frameCount - 1)}
-        value={replayPlayer.currentIndex}
-        onChange={(e) => replayPlayer.seek(Number(e.target.value))}
-        style={{ width: "100%", marginBottom: 6 }}
-      />
-
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <button
-          onClick={replayPlayer.isPlaying ? replayPlayer.pause : replayPlayer.play}
-          style={{
-            background: `rgba(${tokens.ink},0.08)`, border: "none", borderRadius: 8,
-            padding: "4px 10px", fontSize: 12, cursor: "pointer", color: `rgba(${tokens.ink},0.85)`,
-          }}
-        >
-          {replayPlayer.isPlaying ? "⏸ 一時停止" : "▶ 再生"}
-        </button>
-        <select
-          value={replayPlayer.speed}
-          onChange={(e) => replayPlayer.setSpeed(Number(e.target.value))}
-          style={{
-            background: `rgba(${tokens.ink},0.08)`, border: "none", borderRadius: 8,
-            padding: "4px 6px", fontSize: 12, color: `rgba(${tokens.ink},0.85)`,
-          }}
-        >
-          <option value={1}>1倍速</option>
-          <option value={2}>2倍速</option>
-          <option value={4}>4倍速</option>
-          <option value={8}>8倍速</option>
-          <option value={16}>16倍速</option>
-        </select>
-      </div>
-    </div>
-  );
-}
 
 function RealtimeIntensityThresholdBar({ threshold, onChangeThreshold }) {
   const { tokens } = useContext(ThemeContext);
@@ -12701,6 +12589,7 @@ const SETTINGS_ITEMS = {
   advanced: [
     { id: "appearance", label: "外観" },
     { id: "realtimeApi", label: "リアルタイムAPI" },
+    { id: "replay", label: "リプレイ" },
     { id: "experimental", label: "実験的・テスト機能" },
     { id: "logs", label: "ログ" },
   ],
@@ -13205,10 +13094,14 @@ function QuakeTestBroadcastPanel({ testQuake, onAction, quakeTestForm, quakeEpic
    深さ・Mを指定して仮想的な揺れを発生させる。QuakeTestBroadcastPanelと
    同じUIパターン(震源ピック・SettingsCardでの入力欄)を踏襲している。
    ───────────────────────────────────────────────────── */
-function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTestEpicenterPickActive, epicenterEstimates }) {
+function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, shakeTestEpicenterPickActive, epicenterEstimates }) {
   const { tokens } = useContext(ThemeContext);
   const f = shakeTestForm;
-  const running = !!shakeTest;
+  const running = shakeTests.length > 0;
+  // 「実際の震源との比較」は、同時に複数のシミュレーションが動いていると
+  // どの検知イベントがどのシミュレーションに対応するか一意に決められない
+  // ため、ちょうど1件だけ実行中の場合に限って表示する。
+  const compareTarget = shakeTests.length === 1 ? shakeTests[0].form : null;
 
   // 震源推定(epicenterEstimation.ts)の現在の推定結果のうち、最も信頼できそうな
   // ものを「テストとの比較対象」として1つ選ぶ。収束済み(confirmed)のものを
@@ -13216,7 +13109,7 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
   // 収束前の中で検知点数が最も多いものを暫定的に使う。通常はテスト中に発生する
   // 揺れ検知イベントは1つだけのはずだが、複数ある場合の保険。
   let bestEstimate = null;
-  if (epicenterEstimates) {
+  if (compareTarget && epicenterEstimates) {
     for (const est of epicenterEstimates.values()) {
       if (!est) continue;
       if (!bestEstimate) { bestEstimate = est; continue; }
@@ -13226,11 +13119,11 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
       else if (!bestBetter && est.pointCount > bestEstimate.pointCount) bestEstimate = est;
     }
   }
-  const distanceErrorKm = (running && bestEstimate)
-    ? haversineKm(f.latitude, f.longitude, bestEstimate.lat, bestEstimate.lon)
+  const distanceErrorKm = (compareTarget && bestEstimate)
+    ? haversineKm(compareTarget.latitude, compareTarget.longitude, bestEstimate.lat, bestEstimate.lon)
     : null;
-  const depthErrorKm = (running && bestEstimate)
-    ? bestEstimate.depthKm - f.depth
+  const depthErrorKm = (compareTarget && bestEstimate)
+    ? bestEstimate.depthKm - compareTarget.depth
     : null;
 
   const inputStyle = {
@@ -13267,13 +13160,11 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
             <PressableButton
               type="button"
               onClick={() => onAction?.(shakeTestEpicenterPickActive ? "cancelEpicenterPick" : "startEpicenterPick")}
-              disabled={running}
               style={{
-                width: "100%", padding: "10px 12px", borderRadius: 8, border: "none", cursor: running ? "default" : "pointer",
+                width: "100%", padding: "10px 12px", borderRadius: 8, border: "none", cursor: "pointer",
                 textAlign: "left",
                 background: shakeTestEpicenterPickActive ? "rgba(255,69,58,0.18)" : `rgba(${tokens.ink},0.08)`,
                 color: shakeTestEpicenterPickActive ? "#FF453A" : tokens.text,
-                opacity: running ? 0.5 : 1,
               }}
             >
               {shakeTestEpicenterPickActive ? (
@@ -13294,7 +13185,6 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
               <select
                 value={f.depth}
                 onChange={e => patchForm({ depth: parseFloat(e.target.value) })}
-                disabled={running}
                 style={inputStyle}
               >
                 {EEW_TEST_DEPTH_OPTIONS.map(d => (
@@ -13307,7 +13197,6 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
               <select
                 value={f.magnitude}
                 onChange={e => patchForm({ magnitude: parseFloat(e.target.value) })}
-                disabled={running}
                 style={inputStyle}
               >
                 {EEW_TEST_MAGNITUDE_OPTIONS.map(m => (
@@ -13321,48 +13210,75 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
 
       <SettingsCard>
         <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-          {running ? (
-            <PressableButton
-              type="button"
-              onClick={() => onAction?.("stop")}
-              style={{
-                width: "100%", padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer",
-                background: "rgba(255,69,58,0.16)", color: "#FF453A",
-                fontSize: 13, fontWeight: 700, textAlign: "center",
-              }}
-            >
-              シミュレーションを停止
-            </PressableButton>
-          ) : (
-            <PressableButton
-              type="button"
-              onClick={() => onAction?.("start")}
-              disabled={f.latitude == null || f.longitude == null}
-              style={{
-                width: "100%", padding: "10px 14px", borderRadius: 10, border: "none",
-                cursor: (f.latitude == null || f.longitude == null) ? "default" : "pointer",
-                background: "rgba(48,209,88,0.16)", color: "#30D158",
-                fontSize: 13, fontWeight: 700, textAlign: "center",
-                opacity: (f.latitude == null || f.longitude == null) ? 0.5 : 1,
-              }}
-            >
-              地震を発生させる
-            </PressableButton>
-          )}
+          <PressableButton
+            type="button"
+            onClick={() => onAction?.("start")}
+            disabled={f.latitude == null || f.longitude == null}
+            style={{
+              width: "100%", padding: "10px 14px", borderRadius: 10, border: "none",
+              cursor: (f.latitude == null || f.longitude == null) ? "default" : "pointer",
+              background: "rgba(48,209,88,0.16)", color: "#30D158",
+              fontSize: 13, fontWeight: 700, textAlign: "center",
+              opacity: (f.latitude == null || f.longitude == null) ? 0.5 : 1,
+            }}
+          >
+            地震を発生させる
+          </PressableButton>
           <div style={{ fontSize: 11, color: `rgba(${tokens.ink},0.45)`, lineHeight: 1.6 }}>
             発生させると、震源に近い観測点から順にP波→S波が到達し、震度が立ち上がって
             から徐々に収まっていきます。全観測点の揺れが収まると自動的に終了します。
+            実行中でも新たに発生させると、複数の地震を同時にシミュレーションできます
+            (観測点の震度が重複する場合は、より高い方が採用されます)。
           </div>
         </div>
       </SettingsCard>
 
       {running && (
-        <div style={{ margin: "6px 14px 10px", fontSize: 11, color: `rgba(${tokens.ink},0.5)`, lineHeight: 1.7 }}>
-          シミュレーション実行中: {shakeTest.form.place}・M{shakeTest.form.magnitude.toFixed(1)}・深さ{shakeTest.form.depth}km
-        </div>
+        <>
+          <div style={{ margin: "18px 14px 6px" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: `rgba(${tokens.ink},0.7)` }}>
+              実行中のシミュレーション({shakeTests.length}件)
+            </span>
+          </div>
+          <SettingsCard>
+            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+              {shakeTests.map(t => (
+                <div key={t.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: tokens.text, lineHeight: 1.5, minWidth: 0 }}>
+                    {t.form.place}・M{t.form.magnitude.toFixed(1)}・深さ{t.form.depth}km
+                  </div>
+                  <PressableButton
+                    type="button"
+                    onClick={() => onAction?.("stop", { id: t.id })}
+                    style={{
+                      flexShrink: 0, padding: "6px 10px", borderRadius: 8, border: "none", cursor: "pointer",
+                      background: "rgba(255,69,58,0.16)", color: "#FF453A",
+                      fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+                    }}
+                  >
+                    停止
+                  </PressableButton>
+                </div>
+              ))}
+              {shakeTests.length > 1 && (
+                <PressableButton
+                  type="button"
+                  onClick={() => onAction?.("stop")}
+                  style={{
+                    width: "100%", padding: "8px 12px", borderRadius: 8, border: "none", cursor: "pointer",
+                    background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
+                    fontSize: 12, fontWeight: 700, textAlign: "center",
+                  }}
+                >
+                  すべて停止
+                </PressableButton>
+              )}
+            </div>
+          </SettingsCard>
+        </>
       )}
 
-      {running && (
+      {compareTarget && (
         <>
           <div style={{ margin: "18px 14px 6px" }}>
             <span style={{ fontSize: 12.5, fontWeight: 700, color: `rgba(${tokens.ink},0.7)` }}>
@@ -13381,10 +13297,10 @@ function ShakeDetectionTestPanel({ shakeTest, onAction, shakeTestForm, shakeTest
                     <span style={{ fontSize: 11, fontWeight: 700, color: `rgba(${tokens.ink},0.55)` }}>実際の震源</span>
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700 }}>
-                    北緯{f.latitude?.toFixed?.(2)}° ・ 東経{f.longitude?.toFixed?.(2)}°
+                    北緯{compareTarget.latitude?.toFixed?.(2)}° ・ 東経{compareTarget.longitude?.toFixed?.(2)}°
                   </div>
                   <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.6)`, marginTop: 2 }}>
-                    深さ{f.depth}km
+                    深さ{compareTarget.depth}km
                   </div>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -14309,6 +14225,7 @@ function SettingsBody({
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
   realtimeApiToken, onChangeRealtimeApiToken,
+  replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
@@ -14316,7 +14233,7 @@ function SettingsBody({
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
   testQuake, onTestQuakeAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying,
-  shakeTest, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
+  shakeTests, onShakeTestAction, shakeTestForm, shakeTestEpicenterPickActive,
   epicenterEstimates,
   tsunamiAreaPickActive, onStartTsunamiAreaPick, pickedTsunamiAreas,
   onRemoveTsunamiAreaPick, onCycleTsunamiAreaGrade,
@@ -14585,6 +14502,108 @@ function SettingsBody({
     );
   }
 
+  // リプレイファイル(バックフィルサーバーで生成した過去データ)の読み込み・
+  // 再生コントロール。「リアルタイムAPI」と同じ実装パターン。
+  if (category === "advanced" && leaf === "replay") {
+    const handleFileChange = (e) => {
+      const file = e.target.files?.[0];
+      if (file) replayPlayer.loadFile(file);
+      e.target.value = "";
+    };
+
+    return (
+      <>
+        <SettingsHeader title="リプレイ"/>
+        <SettingsCard>
+          <div style={{ padding: "14px 16px" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: `rgba(${tokens.ink},0.85)`, marginBottom: 6 }}>
+              リプレイファイル
+            </div>
+            <div style={{ fontSize: 12, color: `rgba(${tokens.ink},0.55)`, marginBottom: 10, lineHeight: 1.5 }}>
+              バックフィルサーバーで生成した過去データのファイル(.bin)を読み込むと、
+              リアルタイムタブの地図で過去の揺れを再生できます。
+            </div>
+
+            {!replayPlayer.loaded ? (
+              <label
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6,
+                  padding: "9px 14px", borderRadius: 10,
+                  border: `1px solid rgba(${tokens.ink},0.15)`,
+                  background: `rgba(${tokens.ink},0.04)`,
+                  fontSize: 13, color: `rgba(${tokens.ink},0.85)`, cursor: "pointer",
+                }}
+              >
+                ファイルを選択
+                <input type="file" accept=".bin" onChange={handleFileChange} style={{ display: "none" }}/>
+              </label>
+            ) : (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
+                    {replayPlayer.fileName}
+                  </span>
+                  <button
+                    onClick={replayPlayer.close}
+                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: `rgba(${tokens.ink},0.5)`, padding: 0 }}
+                  >
+                    閉じる
+                  </button>
+                </div>
+
+                <div style={{ fontSize: 12, fontVariantNumeric: "tabular-nums", color: `rgba(${tokens.ink},0.55)`, marginBottom: 8 }}>
+                  {replayPlayer.frames[replayPlayer.currentIndex]
+                    ? replayPlayer.frames[replayPlayer.currentIndex].dataTime.toLocaleString("ja-JP", { hour12: false })
+                    : "--"}
+                  {"  ("}{replayPlayer.currentIndex + 1}/{replayPlayer.frames.length}{")"}
+                </div>
+
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, replayPlayer.frames.length - 1)}
+                  value={replayPlayer.currentIndex}
+                  onChange={(e) => replayPlayer.seek(Number(e.target.value))}
+                  style={{ width: "100%", marginBottom: 10 }}
+                />
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    onClick={replayPlayer.isPlaying ? replayPlayer.pause : replayPlayer.play}
+                    style={{
+                      background: `rgba(${tokens.ink},0.08)`, border: "none", borderRadius: 8,
+                      padding: "6px 14px", fontSize: 13, cursor: "pointer", color: `rgba(${tokens.ink},0.85)`,
+                    }}
+                  >
+                    {replayPlayer.isPlaying ? "⏸ 一時停止" : "▶ 再生"}
+                  </button>
+                  <select
+                    value={replayPlayer.speed}
+                    onChange={(e) => replayPlayer.setSpeed(Number(e.target.value))}
+                    style={{
+                      background: `rgba(${tokens.ink},0.08)`, border: "none", borderRadius: 8,
+                      padding: "6px 8px", fontSize: 13, color: `rgba(${tokens.ink},0.85)`,
+                    }}
+                  >
+                    <option value={1}>1倍速</option>
+                    <option value={2}>2倍速</option>
+                    <option value={4}>4倍速</option>
+                    <option value={8}>8倍速</option>
+                    <option value={16}>16倍速</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {replayPlayer.error && (
+              <div style={{ marginTop: 10, fontSize: 12, color: "#FF453A" }}>{replayPlayer.error}</div>
+            )}
+          </div>
+        </SettingsCard>
+      </>
+    );
+  }
+
   // 外観(詳細設定カテゴリの項目)の中身。
   // 「デバイスの設定に合わせる」が初期設定(ON)で、端末のライト/ダーク設定に
   // 自動追従する。OFFにした場合のみ、ライト/ダークを手動で選べる。
@@ -14740,7 +14759,7 @@ function SettingsBody({
       <>
         <SettingsHeader title="地震検知テスト"/>
         <ShakeDetectionTestPanel
-          shakeTest={shakeTest}
+          shakeTests={shakeTests}
           onAction={onShakeTestAction}
           shakeTestForm={shakeTestForm}
           shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
@@ -14910,9 +14929,8 @@ export default function App() {
   const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, realtimeEverActivated, realtimeApiToken);
 
   // リプレイファイル(バックフィルサーバーで生成した過去データ)の再生。
-  // ファイルが読み込まれている間は、地図に渡す観測点の値をこちら由来に
-  // 差し替える(観測点一覧・座標自体はrealtimeStream.stationsをそのまま使う)。
-  // 値の実際の合成(シミュレーションとの優先順位含む)はeffectiveRealtimeValues側で行う。
+  // 読み込みは設定タブ「詳細設定」から行う。値の実際の合成(シミュレーションとの
+  // 優先順位含む)はeffectiveRealtimeValues側で行う。
   const replayPlayer = useReplayPlayer();
   const realtimeDataTimeForMap = replayPlayer.loaded
     ? (replayPlayer.frames[replayPlayer.currentIndex]?.dataTime ?? null)
@@ -15628,22 +15646,20 @@ export default function App() {
   }
   const [shakeTestForm, setShakeTestForm] = useState(defaultShakeTestForm);
   const [shakeTestEpicenterPickActive, setShakeTestEpicenterPickActive] = useState(false);
-  // 実行中のシミュレーション本体。null = 実行していない。
-  const [shakeTest, setShakeTest] = useState(null); // { startedAt, perStation, form }
-  // shakeTest実行中に一定間隔で値を再計算させるための、ただのカウンタ。
+  // 実行中のシミュレーション本体。複数同時実行に対応するため配列で持つ。
+  // 各要素: { id, startedAt, perStation, form }
+  const [shakeTests, setShakeTests] = useState([]);
+  // shakeTests実行中に一定間隔で値を再計算させるための、ただのカウンタ。
   const [shakeTestTick, setShakeTestTick] = useState(0);
 
-  // 地震検知テスト実行中の「正解」の震源(MapCanvasへ渡す用)。テスト中で
-  // なければnull。shakeTest.formがそのまま入っているとundefined混じりに
-  // なりうるので、必要なフィールドだけ抜き出しておく。
-  const shakeTestTrueEpicenter = shakeTest
-    ? {
-        lat: shakeTest.form.latitude,
-        lon: shakeTest.form.longitude,
-        depthKm: shakeTest.form.depth,
-        magnitude: shakeTest.form.magnitude,
-      }
-    : null;
+  // 地震検知テスト実行中の「正解」の震源群(MapCanvasへ渡す用、複数同時
+  // 実行に対応)。実行中でなければ空配列。
+  const shakeTestTrueEpicenters = useMemo(() => shakeTests.map(t => ({
+    lat: t.form.latitude,
+    lon: t.form.longitude,
+    depthKm: t.form.depth,
+    magnitude: t.form.magnitude,
+  })), [shakeTests]);
 
   function handleShakeTestAction(action, payload) {
     if (action === "patchForm") {
@@ -15674,11 +15690,25 @@ export default function App() {
         },
         realtimeStream.stations
       );
-      setShakeTest({ startedAt: Date.now(), perStation, form: shakeTestForm });
+      // 複数同時実行に対応するため、既存の実行中シミュレーションを止めずに
+      // 追加する(置き換えではなく配列への追加)。
+      const newTest = {
+        id: `shaketest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        startedAt: Date.now(),
+        perStation,
+        form: shakeTestForm,
+      };
+      setShakeTests(prev => [...prev, newTest]);
       return;
     }
     if (action === "stop") {
-      setShakeTest(null);
+      // payload.idが指定されていればそのシミュレーションだけ個別に停止する。
+      // 指定が無ければ(バナーの「停止」ボタン等)全て停止する。
+      if (payload?.id) {
+        setShakeTests(prev => prev.filter(t => t.id !== payload.id));
+      } else {
+        setShakeTests([]);
+      }
       return;
     }
   }
@@ -15695,36 +15725,50 @@ export default function App() {
 
   // シミュレーション実行中は、本物のWebSocket更新(realtimeStream.values)とは
   // 独立して値を再計算する必要があるため、専用のタイマーでshakeTestTickを回す。
-  // 本物のリアルタイムデータの更新間隔(1秒ごと)に合わせている。全観測点が
-  // 平常値近くまで減衰し終えたら自動的に停止する。
+  // 本物のリアルタイムデータの更新間隔(1秒ごと)に合わせている。各シミュ
+  // レーションは、全観測点が平常値近くまで減衰し終えたら個別に自動終了する
+  // (他のシミュレーションが実行中でも、終わったものだけ配列から取り除く)。
+  const hasActiveShakeTest = shakeTests.length > 0;
   useEffect(() => {
-    if (!shakeTest) return;
+    if (!hasActiveShakeTest) return;
     const interval = setInterval(() => {
-      const elapsed = Date.now() - shakeTest.startedAt;
-      if (isShakeTestFinished(shakeTest.perStation, elapsed)) {
-        setShakeTest(null);
-      } else {
-        setShakeTestTick(t => t + 1);
-      }
+      const now = Date.now();
+      setShakeTests(prev => {
+        const stillRunning = prev.filter(t => !isShakeTestFinished(t.perStation, now - t.startedAt));
+        return stillRunning.length === prev.length ? prev : stillRunning;
+      });
+      setShakeTestTick(t => t + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, [shakeTest]);
+  }, [hasActiveShakeTest]);
 
   // MapCanvas(地図描画・揺れ検知エンジンの両方)へ渡す実質的なrealtimeValues。
   // 優先順位: リプレイ再生中 > シミュレーション実行中 > 本物のリアルタイムデータ。
-  // (リプレイとシミュレーションを同時に使うことは想定していないが、
-  //  万一両方アクティブでもリプレイを優先する)
+  // シミュレーション実行中は、本物のデータに観測点ごとのシミュレーション値を
+  // 上書き合成する。検知エンジン側からは本物のデータと区別が付かない。
+  // 複数のシミュレーションが同時実行されている場合、同じ観測点の値が
+  // 複数のシミュレーションから計算されることがあるため、その場合はより
+  // 震度の高い方を採用する。
   const effectiveRealtimeValues = useMemo(() => {
     if (replayPlayer.loaded) return replayPlayer.values;
-    if (!shakeTest) return realtimeStream.values;
-    const elapsed = Date.now() - shakeTest.startedAt;
-    const overlay = computeShakeTestValues(shakeTest.perStation, elapsed);
-    if (overlay.size === 0) return realtimeStream.values;
+    if (shakeTests.length === 0) return realtimeStream.values;
+    const now = Date.now();
+    const overlayMerged = new Map();
+    for (const test of shakeTests) {
+      const elapsed = now - test.startedAt;
+      const overlay = computeShakeTestValues(test.perStation, elapsed);
+      for (const [id, v] of overlay) {
+        const existing = overlayMerged.get(id);
+        // 重複した観測点は、より震度の高い方を採用する。
+        overlayMerged.set(id, existing == null ? v : Math.max(existing, v));
+      }
+    }
+    if (overlayMerged.size === 0) return realtimeStream.values;
     const merged = new Map(realtimeStream.values);
-    for (const [id, v] of overlay) merged.set(id, v);
+    for (const [id, v] of overlayMerged) merged.set(id, v);
     return merged;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [realtimeStream.values, shakeTest, shakeTestTick, replayPlayer.loaded, replayPlayer.values]);
+  }, [realtimeStream.values, shakeTests, shakeTestTick, replayPlayer.loaded, replayPlayer.values]);
 
   // テスト配信中は、実際の一覧の先頭にテストデータを合成する。地震タブに関する
   // App側の判定(一覧・選択中の地震・地図表示)は、以降すべてこちらを使う。
@@ -17041,7 +17085,7 @@ export default function App() {
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
           onEpicenterEstimateChange={setEpicenterEstimates}
-          shakeTestTrueEpicenter={shakeTestTrueEpicenter}
+          shakeTestTrueEpicenters={shakeTestTrueEpicenters}
         />
 
         {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
@@ -17194,7 +17238,7 @@ export default function App() {
 
         {/* 地震検知テストのシミュレーション実行中バナー — 実データと混同しないよう、
             どのタブを見ていても常に分かるように画面上部中央に出す。 */}
-        {shakeTest && (
+        {shakeTests.length > 0 && (
           <div style={{
             position: "absolute",
             top: "calc(16px + env(safe-area-inset-top))",
@@ -17210,7 +17254,7 @@ export default function App() {
               pointerEvents: "auto",
             }}>
               <span style={{ position: "relative", zIndex: 1, fontSize: 12.5, fontWeight: 700, color: "#FF9F0A" }}>
-                ⚠️ 地震検知テスト実行中(実際の地震ではありません)
+                ⚠️ 地震検知テスト実行中{shakeTests.length > 1 ? `(${shakeTests.length}件、実際の地震ではありません)` : "(実際の地震ではありません)"}
               </span>
               <PressableButton
                 type="button"
@@ -17222,7 +17266,7 @@ export default function App() {
                   fontSize: 12, fontWeight: 700, color: "#FF9F0A",
                 }}
               >
-                停止
+                {shakeTests.length > 1 ? "すべて停止" : "停止"}
               </PressableButton>
             </Glass>
           </div>
@@ -17278,23 +17322,6 @@ export default function App() {
               threshold={realtimeIntensityThreshold}
               onChangeThreshold={handleChangeRealtimeIntensityThreshold}
             />
-          </div>
-        )}
-
-        {/* リプレイ再生パネル。閾値バーと重ならないよう反対側の隅に置く。 */}
-        {showRealtimeMapLayers && (
-          <div style={isWide ? {
-            position: "absolute",
-            left: 16,
-            bottom: "calc(16px + env(safe-area-inset-bottom))",
-            zIndex: 30,
-          } : {
-            position: "absolute",
-            top: "calc(16px + env(safe-area-inset-top))",
-            right: 16,
-            zIndex: 30,
-          }}>
-            <ReplayControlPanel replayPlayer={replayPlayer} />
           </div>
         )}
 
@@ -17385,6 +17412,7 @@ export default function App() {
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
                   realtimeApiToken={realtimeApiToken}
+                  replayPlayer={replayPlayer}
                   onChangeRealtimeApiToken={updateRealtimeApiToken}
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
@@ -17412,7 +17440,7 @@ export default function App() {
                   quakeTestForm={quakeTestForm}
                   quakeEpicenterPickActive={quakeEpicenterPickActive}
                   quakeTestAutoPlaying={quakeTestAutoPlaying}
-                  shakeTest={shakeTest}
+                  shakeTests={shakeTests}
                   onShakeTestAction={handleShakeTestAction}
                   shakeTestForm={shakeTestForm}
                   shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
@@ -17494,6 +17522,7 @@ export default function App() {
               experimentalFeaturesEnabled={experimentalFeaturesEnabled}
               onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
               realtimeApiToken={realtimeApiToken}
+              replayPlayer={replayPlayer}
               onChangeRealtimeApiToken={updateRealtimeApiToken}
               realtimeRisingEnabled={realtimeRisingEnabled}
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
@@ -17521,7 +17550,7 @@ export default function App() {
               quakeTestForm={quakeTestForm}
               quakeEpicenterPickActive={quakeEpicenterPickActive}
               quakeTestAutoPlaying={quakeTestAutoPlaying}
-              shakeTest={shakeTest}
+              shakeTests={shakeTests}
               onShakeTestAction={handleShakeTestAction}
               shakeTestForm={shakeTestForm}
               shakeTestEpicenterPickActive={shakeTestEpicenterPickActive}
