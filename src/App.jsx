@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.8";
+const APP_VERSION = "0.6.9";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -2491,6 +2491,13 @@ function MapCanvas({
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, Date.now())
         : new Map();
       lastEpicenterEstimatesRef.current = estimates;
+      // 【対策C: 検知が分散してしまう問題】epicenterEstimation.tsのより
+      // 精度の高い推定結果(グリッド探索+振幅較正)を、shakeDetection.ts
+      // 側のイベント統合判定(canEventsMerge)へフィードバックする。次回の
+      // processTick呼び出し(次tick)から、粗い簡易チェックより優先して
+      // 使われる(1tick遅れの反映になるが、統合判定は瞬時性より精度を
+      // 優先すべき処理のため許容している)。
+      shakeEngineRef.current.setExternalEstimates(estimates);
       // 【対策: ラベルが表示されないバグ】画像(addImage/updateImage)を登録
       // する前にsetDataでlabelIconIdを参照するデータを流し込むと、
       // MapLibreがレイアウト処理の時点で画像が見つからず、後から画像を
@@ -2511,6 +2518,10 @@ function MapCanvas({
       // 空にしておく(レイヤー自体は非表示だが、念のため古いデータを
       // 参照し続けないようにする)。
       lastEpicenterEstimatesRef.current = new Map();
+      // 【対策C】機能がOFFの間、イベント統合判定(canEventsMerge)が古い
+      // 推定を使い続けないよう、エンジン側の参照もクリアしておく
+      // (nullを渡すとsetExternalEstimates内で空のMapに正規化される)。
+      shakeEngineRef.current.setExternalEstimates(null);
       // ラベル用に登録していたbitmapも、放置せずここで掃除しておく
       // (updateEpicenterEstimateLabelsの「存在しないeventIdは掃除する」
       // ロジックを、空のMapを渡すことで流用する)。
