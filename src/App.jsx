@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.7";
+const APP_VERSION = "0.6.8";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -2034,6 +2034,16 @@ function MapCanvas({
             if (!e.features || !e.features.length) return;
             setSelectedRealtimePoint(e.features[0].properties);
           });
+
+          // 【対策: 震源推定マーカー・ラベルが観測点(realtime-points-layer)の
+          // 下に隠れてしまう問題】epicenter-estimates-layer・epicenter-
+          // estimates-label-layerは、realtime-points-layerより先にaddLayer
+          // していたため、MapLibreの描画順(後から追加したレイヤーほど上に
+          // 重なる)により観測点の下に埋もれてしまっていた。観測点レイヤーの
+          // 追加が終わったこの時点で、両レイヤーを最前面(スタックの一番上)
+          // へ移動する。
+          map.moveLayer("epicenter-estimates-layer");
+          map.moveLayer("epicenter-estimates-label-layer");
 
           map.on("mouseenter", "epicenter-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
