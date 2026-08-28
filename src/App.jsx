@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.6";
+const APP_VERSION = "0.6.7";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1952,6 +1952,14 @@ function MapCanvas({
               "icon-size": 1,
               "icon-allow-overlap": true,
               "icon-ignore-placement": true,
+            },
+            // 【修正: layoutに書いていたバグ】icon-opacityはlayoutではなく
+            // paintに属するプロパティ。layoutに書いたままではスタイル
+            // スキーマ違反でレイヤー追加自体がエラーになり、ラベルが
+            // 一切表示されなかった(実機のエラーログで確認: "layers.
+            // epicenter-estimates-label-layer.layout.icon-opacity:
+            // unknown property")。
+            paint: {
               "icon-opacity": ["case", ["get", "confirmed"], 1, 0.55],
             },
           });
