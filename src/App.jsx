@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.3";
+const APP_VERSION = "0.6.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1090,16 +1090,126 @@ function buildEpicenterEstimateFeatures(estimates) {
       properties: {
         eventId,
         depthKm: Math.round(est.depthKm),
+        // 推定マグニチュード(estimateEpicenter側でfitMagnitudeにより算出)。
+        // 検知点数が少ない・levelしか無い等で算出できなかった場合はnull。
+        magnitude: est.magnitude,
         pointCount: est.pointCount,
         errorLevel: est.errorLevel,
         // 収束判定(EpicenterEstimator側で付与)。「検知点数が十分」かつ
         // 「推定位置がしばらく動いていない」の両方を満たすまでfalseになる。
         // 早い段階の大きくぶれた推定を、確定した推定と見分けられるようにする。
         confirmed: !!est.confirmed,
+        // 隣に表示する「推定深さ・推定M」ラベル用のアイコンid。実体は
+        // updateEpicenterEstimateLabels側でeventIdごとに1枚だけ登録・
+        // 更新するbitmap(registerOrUpdateEpicenterLabelIcon参照)。
+        labelIconId: `epicenter-label-${eventId}`,
       },
     });
   }
   return features;
+}
+
+/* ─────────────────────────────────────────────────────
+   震源推定マーカーの隣に表示する「推定深さ・推定M」ラベル。
+   text-fieldはスタイルにglyphs(フォント配信)が無いと使えない
+   (STATION_ICON_KEYSの説明コメント参照)ため、他のラベル同様、
+   canvasに焼いたbitmapをicon-imageとして使う。ただし震度キーのような
+   固定少数の組み合わせとは違い、深さ・マグニチュードは推定のたびに
+   細かく変わる連続値のため、値ごとに新しい画像をaddImageし続けると
+   際限なく増えてしまう。そのため「eventIdごとに固定の画像id・固定
+   サイズのcanvasを1枚だけ持ち、内容が変わったらupdateImageで差し替える」
+   方式にして、登録数をイベント数(通常は数件)の範囲に収める。
+   ───────────────────────────────────────────────────── */
+const EPICENTER_LABEL_CANVAS_WIDTH = 240;
+const EPICENTER_LABEL_CANVAS_HEIGHT = 76;
+// icon-imageは1つのbitmap内での座標(ピクセル)基準で解像度非依存に描画
+// したいため、実際の表示解像度より高い倍率で焼いておく(文字がぼやけない
+// ように)。station iconのSTATION_ICON_BASE_RADIUS同様の考え方。
+const EPICENTER_LABEL_CANVAS_SCALE = 2;
+
+// depthKm・magnitudeから表示テキスト(2行)を組み立てる。呼び出し側の
+// drawEpicenterLabelCanvas・updateEpicenterEstimateLabelsの両方から、
+// 同じ内容かどうかの比較にも使う。
+function buildEpicenterLabelText(depthKm, magnitude) {
+  const line1 = `推定深さ: ${depthKm}km`;
+  const line2 = magnitude != null ? `M: ${magnitude.toFixed(1)}` : "M: --";
+  return `${line1}\n${line2}`;
+}
+
+function drawEpicenterLabelCanvas(depthKm, magnitude) {
+  const w = EPICENTER_LABEL_CANVAS_WIDTH * EPICENTER_LABEL_CANVAS_SCALE;
+  const h = EPICENTER_LABEL_CANVAS_HEIGHT * EPICENTER_LABEL_CANVAS_SCALE;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+
+  const FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", "Noto Sans JP", sans-serif';
+  const fontSize = 20 * EPICENTER_LABEL_CANVAS_SCALE;
+  const lineHeight = fontSize * 1.35;
+  const paddingX = 12 * EPICENTER_LABEL_CANVAS_SCALE;
+  const paddingY = 8 * EPICENTER_LABEL_CANVAS_SCALE;
+
+  const [line1, line2] = buildEpicenterLabelText(depthKm, magnitude).split("\n");
+
+  ctx.font = `700 ${fontSize}px ${FONT_STACK}`;
+  const textWidth = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width);
+  const boxWidth = Math.min(w, textWidth + paddingX * 2);
+  const boxHeight = lineHeight * 2 + paddingY * 2;
+
+  // 半透明の角丸背景(地図上の他の情報と重なっても文字が読めるように)。
+  const radius = 8 * EPICENTER_LABEL_CANVAS_SCALE;
+  ctx.beginPath();
+  ctx.moveTo(radius, 0);
+  ctx.arcTo(boxWidth, 0, boxWidth, boxHeight, radius);
+  ctx.arcTo(boxWidth, boxHeight, 0, boxHeight, radius);
+  ctx.arcTo(0, boxHeight, 0, 0, radius);
+  ctx.arcTo(0, 0, boxWidth, 0, radius);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(17,17,17,0.62)";
+  ctx.fill();
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillText(line1, paddingX, paddingY + lineHeight / 2);
+  ctx.fillText(line2, paddingX, paddingY + lineHeight * 1.5);
+
+  return ctx.getImageData(0, 0, w, h);
+}
+
+// map: MapLibreのMapインスタンス。cacheRef: { current: Map<eventId, text> }
+// (前回登録した内容を覚えておき、変化していなければupdateImageを呼ばずに
+// スキップするための単純なキャッシュ)。
+function updateEpicenterEstimateLabels(map, estimates, cacheRef) {
+  if (!cacheRef.current) cacheRef.current = new Map();
+  const cache = cacheRef.current;
+  const activeIds = new Set();
+
+  for (const [eventId, est] of estimates) {
+    if (!est) continue;
+    activeIds.add(eventId);
+    const imageId = `epicenter-label-${eventId}`;
+    const text = buildEpicenterLabelText(Math.round(est.depthKm), est.magnitude);
+    if (cache.get(eventId) === text) continue; // 内容が変わっていなければ何もしない
+
+    const imageData = drawEpicenterLabelCanvas(Math.round(est.depthKm), est.magnitude);
+    if (map.hasImage(imageId)) {
+      map.updateImage(imageId, imageData);
+    } else {
+      map.addImage(imageId, imageData, { pixelRatio: EPICENTER_LABEL_CANVAS_SCALE });
+    }
+    cache.set(eventId, text);
+  }
+
+  // もう存在しないイベントの画像を掃除する(放置すると際限なく増えるため)。
+  for (const eventId of [...cache.keys()]) {
+    if (activeIds.has(eventId)) continue;
+    const imageId = `epicenter-label-${eventId}`;
+    if (map.hasImage(imageId)) map.removeImage(imageId);
+    cache.delete(eventId);
+  }
 }
 
 /* ─────────────────────────────────────────────────────
@@ -1823,6 +1933,29 @@ function MapCanvas({
             },
           });
 
+          // 震源推定マーカーの隣に「推定深さ・推定M」を表示するラベル。
+          // 実体はeventIdごとにcanvasへ焼いたbitmap(updateEpicenterEstimateLabels
+          // 参照)で、内容が変わるたびにupdateImageで差し替える。マーカー本体
+          // (epicenter-estimates-layer)と同じsource(epicenter-estimates)を
+          // 使うため、位置は常に連動する。icon-anchor: "left"+icon-offsetで
+          // マーカーの右隣に配置する。
+          map.addLayer({
+            id: "epicenter-estimates-label-layer",
+            type: "symbol",
+            source: "epicenter-estimates",
+            layout: {
+              visibility: "none",
+              "icon-image": ["get", "labelIconId"],
+              "icon-anchor": "left",
+              // マーカー本体の半径(confirmed時8px)の外側に少し余白を取って配置
+              "icon-offset": [12, 0],
+              "icon-size": 1,
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+              "icon-opacity": ["case", ["get", "confirmed"], 1, 0.55],
+            },
+          });
+
           // リアルタイムタブ(強震モニタ/S-net)専用の観測点レイヤー。
           // 数千点を毎秒更新する想定のため、station-points-symbolのような
           // スプライトアイコン方式(震度キー別に画像を切り替える方式)ではなく、
@@ -2122,6 +2255,14 @@ function MapCanvas({
         showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
       );
     }
+    // 推定深さ・推定Mのラベルも、マーカー本体と同じ条件で表示する。
+    if (map.getLayer("epicenter-estimates-label-layer")) {
+      map.setLayoutProperty(
+        "epicenter-estimates-label-layer",
+        "visibility",
+        showRealtimeMapLayers && epicenterEstimationEnabled ? "visible" : "none"
+      );
+    }
     // 震源推定のP波・S波到達円も、マーカーと同じ条件(強震モニタ本体+
     // 震源推定機能自体がON)の間だけ出す。
     for (const layerId of [
@@ -2195,6 +2336,10 @@ function MapCanvas({
   // 一度だけ生成して使い回す(イベントごとの推定キャッシュを内部に持つため)。
   const epicenterEstimatorRef = useRef(null);
   if (!epicenterEstimatorRef.current) epicenterEstimatorRef.current = new EpicenterEstimator();
+
+  // 推定深さ・推定Mラベル(updateEpicenterEstimateLabels参照)の、
+  // eventIdごとに前回登録した内容のキャッシュ。
+  const epicenterLabelCacheRef = useRef(null);
 
   const onEpicenterEstimateChangeRef = useRef(onEpicenterEstimateChange);
   onEpicenterEstimateChangeRef.current = onEpicenterEstimateChange;
@@ -2317,12 +2462,17 @@ function MapCanvas({
           features: buildEpicenterEstimateFeatures(estimates),
         });
       }
+      updateEpicenterEstimateLabels(map, estimates, epicenterLabelCacheRef);
       onEpicenterEstimateChangeRef.current?.(estimates);
     } else {
       // 機能自体がOFFの間は、P波/S波到達円アニメーション用の参照も
       // 空にしておく(レイヤー自体は非表示だが、念のため古いデータを
       // 参照し続けないようにする)。
       lastEpicenterEstimatesRef.current = new Map();
+      // ラベル用に登録していたbitmapも、放置せずここで掃除しておく
+      // (updateEpicenterEstimateLabelsの「存在しないeventIdは掃除する」
+      // ロジックを、空のMapを渡すことで流用する)。
+      updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
   }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
 
