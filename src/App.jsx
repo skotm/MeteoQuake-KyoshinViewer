@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.5";
+const APP_VERSION = "0.6.6";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -1956,6 +1956,24 @@ function MapCanvas({
             },
           });
 
+          // 【対策: ラベルが表示されないバグの保険】通常はupdateEpicenterEstimateLabels
+          // 側でsetDataより先にaddImageを済ませているため発生しないはずだが、
+          // 万一タイミングがずれてepicenter-estimates-label-layerが
+          // 「epicenter-label-<eventId>」の画像を見つけられなかった場合、
+          // MapLibreがこのイベントを発火する。lastEpicenterEstimatesRefから
+          // 該当イベントの最新の推定を取り出し、その場で登録し直す。
+          map.on("styleimagemissing", (e) => {
+            const m = /^epicenter-label-(.+)$/.exec(e.id);
+            if (!m) return;
+            const eventId = m[1];
+            const est = lastEpicenterEstimatesRef.current?.get(eventId);
+            if (!est) return;
+            const imageData = drawEpicenterLabelCanvas(Math.round(est.depthKm), est.magnitude);
+            if (!map.hasImage(e.id)) {
+              map.addImage(e.id, imageData, { pixelRatio: EPICENTER_LABEL_CANVAS_SCALE });
+            }
+          });
+
           // リアルタイムタブ(強震モニタ/S-net)専用の観測点レイヤー。
           // 数千点を毎秒更新する想定のため、station-points-symbolのような
           // スプライトアイコン方式(震度キー別に画像を切り替える方式)ではなく、
@@ -2455,6 +2473,13 @@ function MapCanvas({
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, Date.now())
         : new Map();
       lastEpicenterEstimatesRef.current = estimates;
+      // 【対策: ラベルが表示されないバグ】画像(addImage/updateImage)を登録
+      // する前にsetDataでlabelIconIdを参照するデータを流し込むと、
+      // MapLibreがレイアウト処理の時点で画像が見つからず、後から画像を
+      // 登録してもそのシンボルを自動的には拾い直さないことがある。画像の
+      // 登録(updateEpicenterEstimateLabels)を先に済ませてから、それを
+      // 参照するsetDataを呼ぶ順序に変更した。
+      updateEpicenterEstimateLabels(map, estimates, epicenterLabelCacheRef);
       const epicenterSource = map.getSource("epicenter-estimates");
       if (epicenterSource) {
         epicenterSource.setData({
@@ -2462,7 +2487,6 @@ function MapCanvas({
           features: buildEpicenterEstimateFeatures(estimates),
         });
       }
-      updateEpicenterEstimateLabels(map, estimates, epicenterLabelCacheRef);
       onEpicenterEstimateChangeRef.current?.(estimates);
     } else {
       // 機能自体がOFFの間は、P波/S波到達円アニメーション用の参照も
