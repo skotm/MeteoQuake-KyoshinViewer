@@ -50,7 +50,7 @@
 #### 謝辞
 
 - [t0729](https://github.com/t0729)氏
-- [anesewo](https://github.com/anesewo)
+- [anesewo](https://github.com/anesewo)氏
   - 地震検知プログラムのノウハウ提供
 
 #### 参考にした記事
