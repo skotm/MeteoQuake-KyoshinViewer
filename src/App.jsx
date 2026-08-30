@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.6";
+const APP_VERSION = "0.7.7";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
@@ -14508,6 +14508,36 @@ function renderMarkdownLite(text, tokens) {
   return blocks;
 }
 
+/* ─────────────────────────────────────────────────────
+   利用規約・注意事項・プライバシーポリシー(public/配下のMarkdown文書)の
+   取得結果を、アプリを開いている間だけメモリ上(モジュール変数)にキャッシュする。
+   - 地図データのloadGeoData等と違い、Cache API/localStorageには一切保存しない。
+     ページを閉じる・再読み込みするとこのモジュール変数ごと自動的に消える
+     ため、「アプリを閉じたらキャッシュを破棄する」を、何もしないことで
+     実現している(=次回起動時は必ず最新のファイルを取得し直すので、
+     文書が更新されていても気づける)。
+   - ConsentGateでのタブ切り替えや、設定画面を開き直した際に、同じ文書へ
+     何度もネットワーク取得しに行かないようにするのが目的。
+   ───────────────────────────────────────────────────── */
+const markdownFileCache = new Map(); // fileName -> Promise<string>
+function loadMarkdownFile(fileName) {
+  if (!markdownFileCache.has(fileName)) {
+    const promise = fetch(`${import.meta.env.BASE_URL}${fileName}`)
+      .then(res => {
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        return res.text();
+      })
+      .catch(err => {
+        // 失敗した場合はキャッシュに残さず、次にloadMarkdownFileが呼ばれた
+        // 時点(コンポーネントの再マウント等)で再取得を試みられるようにする。
+        markdownFileCache.delete(fileName);
+        throw err;
+      });
+    markdownFileCache.set(fileName, promise);
+  }
+  return markdownFileCache.get(fileName);
+}
+
 // public/配下のMarkdownファイル(利用規約・注意事項・プライバシーポリシー等)を
 // 実行時に取得し、renderMarkdownLiteで整形して表示するカード。LicenseFileCardと
 // 同じ理由(ビルドし直さずファイル編集だけで内容を更新できるように)で、
@@ -14521,11 +14551,7 @@ function MarkdownFileCard({ fileName }) {
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading", text: "" });
-    fetch(`${import.meta.env.BASE_URL}${fileName}`)
-      .then(res => {
-        if (!res.ok) throw new Error(`status ${res.status}`);
-        return res.text();
-      })
+    loadMarkdownFile(fileName)
       .then(text => { if (!cancelled) setState({ status: "ready", text }); })
       .catch(err => {
         console.warn(`${fileName}を取得できませんでした:`, err);
@@ -15405,6 +15431,14 @@ export default function App() {
     setConsent(nextConsent);
     saveConsent(nextConsent);
   }
+
+  // アプリを開いたタイミングで、利用規約等の3文書をすぐにメモリキャッシュしておく
+  // (loadMarkdownFile自体が「一度取得したら使い回す」ため、ここでは結果を
+  // 使わずキックするだけでよい)。ConsentGateでのタブ切り替えや、後で設定画面
+  // から読み返す際に、待たされず即表示できるようにするための先読み。
+  useEffect(() => {
+    CONSENT_DOCS.forEach(doc => { loadMarkdownFile(doc.fileName).catch(() => {}); });
+  }, []);
 
   const [activeNav, setActiveNav] = useState("realtime");
   // WebSocketの受信ハンドラ(古いクロージャのまま生き続ける)から常に最新の
