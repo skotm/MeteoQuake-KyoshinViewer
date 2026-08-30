@@ -1,10 +1,12 @@
 # MeteoQuake-KyoshinViewer
-> [!NOTE] 
-現在開発中のため、APIトークンを設定しています。リアルタイム震度は利用できません。
-
 地震・津波情報、気象情報を閲覧することができます。
 
 アプリ内のタブごとに、以下の情報を確認することができます。
+
+### **リアルタイム震度**
+  <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/6f18089b-818d-495b-9cc3-c3103e849489" />
+
+
 
 ### **地震情報**
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/c5297fdd-1c50-4b18-bb80-b0be32356a59" />
