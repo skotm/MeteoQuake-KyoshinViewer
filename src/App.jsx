@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.3";
+const APP_VERSION = "0.7.4";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -10673,6 +10673,17 @@ function ShakeEventCard({ event }) {
 // 一回り小さく)することで、あくまで補助的な表示であることを示す。
 // 以前は画面上部中央に別のバナー(警告文+停止ボタン)を出していたが、
 // この場所に統合し、停止ボタンもここへ移動した。
+//
+// 【文字の縦位置について】Glass自体はdisplay:inline-flexだが、Glassの中身
+// (children)は実際には「コンテンツ層」というただのブロックdiv
+// (position:relative,width:100%,height:100%)にラップされてから描画される
+// ため、Glassのstyleに指定したalignItems:centerは、そのブロックdiv自体を
+// (高さが100%指定のため実質意味を持たないまま)揃えるだけで、その中の
+// テキスト・ボタンの縦位置には効かない。span+buttonをブロックdiv直下に
+// そのまま置くと、フォントの行送り(line-height)や要素ごとのベースライン
+// 位置の違いにより、見た目上わずかに中心からズレる。
+// そのため、ここでは自前でheight:100%のflexラッパーを1つ挟み、
+// alignItems:centerで確実に中央揃えする。
 function ShakeTestRunningBadge({ count = 1, onStop }) {
   return (
     <Glass
@@ -10680,43 +10691,48 @@ function ShakeTestRunningBadge({ count = 1, onStop }) {
       style={{
         padding: "0 6px 0 10px",
         height: 20,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
       }}
     >
-      <span
+      <div
         style={{
           position: "relative",
           zIndex: 1,
-          fontSize: 9,
-          fontWeight: 700,
-          letterSpacing: 0.2,
-          lineHeight: "20px",
-          color: "#FF9F0A",
-          whiteSpace: "nowrap",
-          pointerEvents: "none",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
         }}
       >
-        検知テスト実行中{count > 1 ? `(${count}件)` : ""}
-      </span>
-      <PressableButton
-        type="button"
-        onClick={onStop}
-        style={{
-          position: "relative", zIndex: 1,
-          flexShrink: 0, border: "none", cursor: "pointer",
-          borderRadius: 999,
-          padding: "0 8px",
-          height: 14,
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          background: "rgba(255,159,10,0.22)",
-          fontSize: 8, fontWeight: 700, lineHeight: "14px",
-          color: "#FF9F0A", whiteSpace: "nowrap",
-        }}
-      >
-        {count > 1 ? "すべて停止" : "停止"}
-      </PressableButton>
+        <span
+          style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: 0.2,
+            lineHeight: 1,
+            color: "#FF9F0A",
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+          }}
+        >
+          検知テスト実行中{count > 1 ? `(${count}件)` : ""}
+        </span>
+        <PressableButton
+          type="button"
+          onClick={onStop}
+          style={{
+            flexShrink: 0, border: "none", cursor: "pointer",
+            borderRadius: 999,
+            padding: "0 8px",
+            height: 14,
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            background: "rgba(255,159,10,0.22)",
+            fontSize: 8, fontWeight: 700, lineHeight: 1,
+            color: "#FF9F0A", whiteSpace: "nowrap",
+          }}
+        >
+          {count > 1 ? "すべて停止" : "停止"}
+        </PressableButton>
+      </div>
     </Glass>
   );
 }
@@ -17399,122 +17415,6 @@ export default function App() {
           shakeTestTrueEpicenters={shakeTestTrueEpicenters}
         />
 
-        {/* 津波テスト配信「地図タップで選択」中のバナー — 画面上部中央に浮かぶ。
-            上段: 指示文・選択件数・キャンセル/完了ボタン。
-            下段: 「今タップしたらどのグレードで塗るか」を選ぶパレット。予報区ごとに
-            違うグレードを割り当てたいので、パレットで切り替えてからタップする方式。
-            複数の予報区を選べるようにするため、1回タップしただけではモードを終えず、
-            「完了」を押すまで何度でもタップし直せる。「キャンセル」はピック開始時点の
-            選択に戻す。 */}
-        {tsunamiAreaPickActive && (
-          <div style={{
-            position: "absolute",
-            top: "calc(16px + env(safe-area-inset-top))",
-            left: 0, right: 0,
-            display: "flex", justifyContent: "center",
-            zIndex: 30, padding: "0 16px",
-          }}>
-            <Glass radius={22} style={{
-              display: "flex", flexDirection: "column", gap: 8,
-              padding: "10px 12px",
-              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text, flex: 1 }}>
-                  海岸線をタップして予報区を選択
-                  {pickedTsunamiAreas.length > 0 && `(${pickedTsunamiAreas.length}件選択中)`}
-                </span>
-                <PressableButton
-                  type="button"
-                  onClick={cancelTsunamiAreaPick}
-                  style={{
-                    flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
-                    background: `rgba(${themeContextValue.tokens.ink},0.08)`,
-                    fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
-                  }}
-                >
-                  キャンセル
-                </PressableButton>
-                <PressableButton
-                  type="button"
-                  onClick={finishTsunamiAreaPick}
-                  style={{
-                    flexShrink: 0, padding: "6px 14px", borderRadius: 999, border: "none", cursor: "pointer",
-                    background: "#0A84FF",
-                    fontSize: 12, fontWeight: 700, color: "#fff",
-                  }}
-                >
-                  完了
-                </PressableButton>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 11, color: themeContextValue.tokens.textSecondary, flexShrink: 0 }}>
-                  塗るグレード:
-                </span>
-                {TEST_TSUNAMI_GRADE_OPTIONS.map(opt => {
-                  const active = activePickGrade === opt.value;
-                  const color = tsunamiGradeInfo(opt.value).color;
-                  return (
-                    <PressableButton
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setActivePickGrade(opt.value)}
-                      style={{
-                        display: "inline-flex", alignItems: "center", gap: 5,
-                        padding: "5px 10px 5px 8px", borderRadius: 999, cursor: "pointer",
-                        border: active ? `1.5px solid ${color}` : "1.5px solid transparent",
-                        background: active ? `${color}26` : `rgba(${themeContextValue.tokens.ink},0.05)`,
-                        fontSize: 11, fontWeight: 700,
-                        color: active ? themeContextValue.tokens.text : themeContextValue.tokens.textSecondary,
-                      }}
-                    >
-                      <span style={{ width: 8, height: 8, borderRadius: 999, background: color, flexShrink: 0 }}/>
-                      {opt.label}
-                    </PressableButton>
-                  );
-                })}
-              </div>
-            </Glass>
-          </div>
-        )}
-
-        {/* 緊急地震速報テスト配信「地図をタップして震源を指定」中のバナー。
-            震源は1点だけなので津波の予報区ピックと違って複数タップの積み上げは不要
-            ─ タップした瞬間に確定し、自動的にモードを終える(MapCanvas側のクリック
-            ハンドラ→handlePickEewEpicenterでeewEpicenterPickActiveをfalseに戻している)。
-            ここでは「今からタップする」ことを案内し、途中でやめられるように
-            キャンセルボタンだけ出す。 */}
-        {eewEpicenterPickActive && (
-          <div style={{
-            position: "absolute",
-            top: "calc(16px + env(safe-area-inset-top))",
-            left: 0, right: 0,
-            display: "flex", justifyContent: "center",
-            zIndex: 30, padding: "0 16px",
-          }}>
-            <Glass radius={22} style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "10px 12px",
-              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
-            }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text }}>
-                地図をタップして震源を指定
-              </span>
-              <PressableButton
-                type="button"
-                onClick={() => handleTestEewAction("cancelEpicenterPick")}
-                style={{
-                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
-                  background: `rgba(${themeContextValue.tokens.ink},0.08)`,
-                  fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
-                }}
-              >
-                キャンセル
-              </PressableButton>
-            </Glass>
-          </div>
-        )}
-
         {/* 地震検知テスト「地図をタップして震源を指定」中のバナー。EEWの震源ピックと同じ構成。 */}
         {shakeTestEpicenterPickActive && (
           <div style={{
@@ -17580,23 +17480,145 @@ export default function App() {
             選択している間は showRealtimeMapLayers 自体がfalseになるため非表示)。
             EEWの予想震度凡例・地震/津波の凡例は画面右上、このバーは縦画面で
             左上・横画面(isWide)で右下と、位置が分かれているため重ならない。
-            そのため緊急地震速報の表示中も隠さず、常時表示する。 */}
-        {showRealtimeMapLayers && (
+            そのため緊急地震速報の表示中も隠さず、常時表示する。
+
+            津波テスト配信・緊急地震速報テスト配信の「地図をタップして選択」
+            バナーは、以前は画面上部中央に単独で浮かべていたが、この震度
+            しきい値バー(震度凡例のカラーバー)のすぐ上に積み上げる形に変更した。
+            バー自体と同じコンテナ内でflex columnとして並べているため、
+            (a) 位置(縦画面=左上/横画面=右下)が自動的にバーと揃い、
+            (b) バーが無い場合(showRealtimeMapLayersがfalse)でもバナー単独で
+            正しい位置に表示できる。表示条件はバー単独の場合
+            (showRealtimeMapLayers)とバナー単独の場合(pick中)の両方をORで
+            まとめてコンテナごと出し分けている。 */}
+        {(showRealtimeMapLayers || tsunamiAreaPickActive || eewEpicenterPickActive) && (
           <div style={isWide ? {
             position: "absolute",
             right: 16,
             bottom: "calc(16px + env(safe-area-inset-bottom))",
             zIndex: 30,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 8,
           } : {
             position: "absolute",
             top: "calc(16px + env(safe-area-inset-top))",
             left: 16,
             zIndex: 30,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            gap: 8,
           }}>
-            <RealtimeIntensityThresholdBar
-              threshold={realtimeIntensityThreshold}
-              onChangeThreshold={handleChangeRealtimeIntensityThreshold}
-            />
+            {/* 津波テスト配信「地図タップで選択」中のバナー。
+                上段: 指示文・選択件数・キャンセル/完了ボタン。
+                下段: 「今タップしたらどのグレードで塗るか」を選ぶパレット。予報区ごとに
+                違うグレードを割り当てたいので、パレットで切り替えてからタップする方式。
+                複数の予報区を選べるようにするため、1回タップしただけではモードを終えず、
+                「完了」を押すまで何度でもタップし直せる。「キャンセル」はピック開始時点の
+                選択に戻す。 */}
+            {tsunamiAreaPickActive && (
+              <Glass radius={22} style={{
+                display: "flex", flexDirection: "column", gap: 8,
+                padding: "10px 12px",
+                maxWidth: "calc(100vw - 32px)",
+                animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text, flex: 1 }}>
+                    海岸線をタップして予報区を選択
+                    {pickedTsunamiAreas.length > 0 && `(${pickedTsunamiAreas.length}件選択中)`}
+                  </span>
+                  <PressableButton
+                    type="button"
+                    onClick={cancelTsunamiAreaPick}
+                    style={{
+                      flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
+                      background: `rgba(${themeContextValue.tokens.ink},0.08)`,
+                      fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
+                    }}
+                  >
+                    キャンセル
+                  </PressableButton>
+                  <PressableButton
+                    type="button"
+                    onClick={finishTsunamiAreaPick}
+                    style={{
+                      flexShrink: 0, padding: "6px 14px", borderRadius: 999, border: "none", cursor: "pointer",
+                      background: "#0A84FF",
+                      fontSize: 12, fontWeight: 700, color: "#fff",
+                    }}
+                  >
+                    完了
+                  </PressableButton>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 11, color: themeContextValue.tokens.textSecondary, flexShrink: 0 }}>
+                    塗るグレード:
+                  </span>
+                  {TEST_TSUNAMI_GRADE_OPTIONS.map(opt => {
+                    const active = activePickGrade === opt.value;
+                    const color = tsunamiGradeInfo(opt.value).color;
+                    return (
+                      <PressableButton
+                        key={opt.value}
+                        type="button"
+                        onClick={() => setActivePickGrade(opt.value)}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          padding: "5px 10px 5px 8px", borderRadius: 999, cursor: "pointer",
+                          border: active ? `1.5px solid ${color}` : "1.5px solid transparent",
+                          background: active ? `${color}26` : `rgba(${themeContextValue.tokens.ink},0.05)`,
+                          fontSize: 11, fontWeight: 700,
+                          color: active ? themeContextValue.tokens.text : themeContextValue.tokens.textSecondary,
+                        }}
+                      >
+                        <span style={{ width: 8, height: 8, borderRadius: 999, background: color, flexShrink: 0 }}/>
+                        {opt.label}
+                      </PressableButton>
+                    );
+                  })}
+                </div>
+              </Glass>
+            )}
+
+            {/* 緊急地震速報テスト配信「地図をタップして震源を指定」中のバナー。
+                震源は1点だけなので津波の予報区ピックと違って複数タップの積み上げは不要
+                ─ タップした瞬間に確定し、自動的にモードを終える(MapCanvas側のクリック
+                ハンドラ→handlePickEewEpicenterでeewEpicenterPickActiveをfalseに戻している)。
+                ここでは「今からタップする」ことを案内し、途中でやめられるように
+                キャンセルボタンだけ出す。 */}
+            {eewEpicenterPickActive && (
+              <Glass radius={22} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+                maxWidth: "calc(100vw - 32px)",
+                animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text }}>
+                  地図をタップして震源を指定
+                </span>
+                <PressableButton
+                  type="button"
+                  onClick={() => handleTestEewAction("cancelEpicenterPick")}
+                  style={{
+                    flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
+                    background: `rgba(${themeContextValue.tokens.ink},0.08)`,
+                    fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
+                  }}
+                >
+                  キャンセル
+                </PressableButton>
+              </Glass>
+            )}
+
+            {showRealtimeMapLayers && (
+              <RealtimeIntensityThresholdBar
+                threshold={realtimeIntensityThreshold}
+                onChangeThreshold={handleChangeRealtimeIntensityThreshold}
+              />
+            )}
           </div>
         )}
 
