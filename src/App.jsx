@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.4";
+const APP_VERSION = "0.7.5";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -13010,14 +13010,20 @@ const EEW_TEST_DEPTH_OPTIONS = Array.from({ length: 61 }, (_, i) => i * 10);
 const EEW_TEST_MAGNITUDE_OPTIONS = Array.from({ length: 65 }, (_, i) => Math.round((3.5 + i * 0.1) * 10) / 10);
 
 function EewTestBroadcastPanel({ testEews, onAction, eewTestForm, eewEpicenterPickActive }) {
-  const { tokens } = useContext(ThemeContext);
+  const { tokens, mode } = useContext(ThemeContext);
   const f = eewTestForm;
   const isEditing = !!f.editingId;
 
+  // colorScheme: <select>のネイティブなドロップダウン一覧(PCのブラウザは
+  // OS/ブラウザ側の描画になり、backgroundやcolorのCSSがポップアップの中まで
+  // 完全には反映されない)に、閉じた状態のボタンと同じ配色系統を使わせるため
+  // の指定。これが無いと常にライト前提の配色になり、ダークモード時に白文字が
+  // 白背景のポップアップに重なって読めなくなる。
   const inputStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
     background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
     fontSize: 13, fontWeight: 600, boxSizing: "border-box",
+    colorScheme: mode === "dark" ? "dark" : "light",
   };
   const labelStyle = {
     display: "block", fontSize: 11, fontWeight: 600,
@@ -13210,13 +13216,16 @@ const QUAKE_TEST_TSUNAMI_OPTIONS = [
 ];
 
 function QuakeTestBroadcastPanel({ testQuake, onAction, quakeTestForm, quakeEpicenterPickActive, quakeTestAutoPlaying }) {
-  const { tokens } = useContext(ThemeContext);
+  const { tokens, mode } = useContext(ThemeContext);
   const f = quakeTestForm;
 
+  // colorScheme: PCブラウザのネイティブ<select>ポップアップの配色をアプリの
+  // モードに合わせる(無いとダークモードで白文字が白背景に埋もれて読めない)。
   const inputStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
     background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
     fontSize: 13, fontWeight: 600, boxSizing: "border-box",
+    colorScheme: mode === "dark" ? "dark" : "light",
   };
   const labelStyle = {
     display: "block", fontSize: 11, fontWeight: 600,
@@ -13397,7 +13406,7 @@ function QuakeTestBroadcastPanel({ testQuake, onAction, quakeTestForm, quakeEpic
    同じUIパターン(震源ピック・SettingsCardでの入力欄)を踏襲している。
    ───────────────────────────────────────────────────── */
 function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, shakeTestEpicenterPickActive, epicenterEstimates }) {
-  const { tokens } = useContext(ThemeContext);
+  const { tokens, mode } = useContext(ThemeContext);
   const f = shakeTestForm;
   const running = shakeTests.length > 0;
 
@@ -13422,10 +13431,13 @@ function ShakeDetectionTestPanel({ shakeTests = [], onAction, shakeTestForm, sha
     return best;
   }
 
+  // colorScheme: PCブラウザのネイティブ<select>ポップアップの配色をアプリの
+  // モードに合わせる(無いとダークモードで白文字が白背景に埋もれて読めない)。
   const inputStyle = {
     width: "100%", padding: "8px 10px", borderRadius: 8, border: "none",
     background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
     fontSize: 13, fontWeight: 600, boxSizing: "border-box",
+    colorScheme: mode === "dark" ? "dark" : "light",
   };
   const labelStyle = {
     display: "block", fontSize: 11, fontWeight: 600,
@@ -13675,7 +13687,7 @@ function TsunamiTestBroadcastPanel({
   pickedHeights = [], onChangeHeightPick, onRemoveHeightPick,
   candidateHeightStations = [], onAddHeightPick,
 }) {
-  const { tokens } = useContext(ThemeContext);
+  const { tokens, mode } = useContext(ThemeContext);
   // 追加先の候補: すでに選択済みの観測点は除いておく(二重追加を防ぐ)。
   const availableCandidates = candidateHeightStations.filter(
     st => !pickedHeights.some(h => h.code === st.code)
@@ -13780,6 +13792,9 @@ function TsunamiTestBroadcastPanel({
                       padding: "6px 8px", borderRadius: 8, border: "none",
                       background: `rgba(${tokens.ink},0.08)`, color: tokens.text,
                       fontSize: 13, fontWeight: 600,
+                      // PCブラウザのネイティブポップアップの配色をモードに合わせる
+                      // (無いとダークモードで白文字が白背景に埋もれて読めない)。
+                      colorScheme: mode === "dark" ? "dark" : "light",
                     }}
                   >
                     {TSUNAMI_HEIGHT_PICK_OPTIONS.map(v => (
@@ -13822,6 +13837,9 @@ function TsunamiTestBroadcastPanel({
                 width: "100%", padding: "10px 12px", borderRadius: 10, border: "none", cursor: "pointer",
                 background: "rgba(10,132,255,0.14)", color: "#0A84FF",
                 fontSize: 13, fontWeight: 700,
+                // PCブラウザのネイティブポップアップの配色をモードに合わせる
+                // (無いとダークモードで文字が背景に埋もれて読めない)。
+                colorScheme: mode === "dark" ? "dark" : "light",
               }}
             >
               <option value="">+ 観測点を追加…</option>
@@ -14907,6 +14925,9 @@ function SettingsBody({
                     style={{
                       background: `rgba(${tokens.ink},0.08)`, border: "none", borderRadius: 8,
                       padding: "6px 8px", fontSize: 13, color: `rgba(${tokens.ink},0.85)`,
+                      // PCブラウザのネイティブポップアップの配色をモードに合わせる
+                      // (無いとダークモードで文字が背景に埋もれて読めない)。
+                      colorScheme: themeMode === "dark" ? "dark" : "light",
                     }}
                   >
                     <option value={1}>1倍速</option>
@@ -17415,38 +17436,6 @@ export default function App() {
           shakeTestTrueEpicenters={shakeTestTrueEpicenters}
         />
 
-        {/* 地震検知テスト「地図をタップして震源を指定」中のバナー。EEWの震源ピックと同じ構成。 */}
-        {shakeTestEpicenterPickActive && (
-          <div style={{
-            position: "absolute",
-            top: "calc(16px + env(safe-area-inset-top))",
-            left: 0, right: 0,
-            display: "flex", justifyContent: "center",
-            zIndex: 30, padding: "0 16px",
-          }}>
-            <Glass radius={22} style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "10px 12px",
-              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
-            }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text }}>
-                地図をタップして震源を指定(地震検知テスト)
-              </span>
-              <PressableButton
-                type="button"
-                onClick={() => handleShakeTestAction("cancelEpicenterPick")}
-                style={{
-                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
-                  background: `rgba(${themeContextValue.tokens.ink},0.08)`,
-                  fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
-                }}
-              >
-                キャンセル
-              </PressableButton>
-            </Glass>
-          </div>
-        )}
-
         {/* 震度凡例 — 地震を選択している間だけ、画面右上に縦並びで浮かぶ。
             緊急地震速報の詳細を表示中(eewDetailOpen)は、EEW側に別の凡例
             (震度の予測範囲の凡例)があるため、こちらは隠す。これが無いと、
@@ -17482,16 +17471,16 @@ export default function App() {
             左上・横画面(isWide)で右下と、位置が分かれているため重ならない。
             そのため緊急地震速報の表示中も隠さず、常時表示する。
 
-            津波テスト配信・緊急地震速報テスト配信の「地図をタップして選択」
-            バナーは、以前は画面上部中央に単独で浮かべていたが、この震度
-            しきい値バー(震度凡例のカラーバー)のすぐ上に積み上げる形に変更した。
-            バー自体と同じコンテナ内でflex columnとして並べているため、
+            津波テスト配信・緊急地震速報テスト配信・地震検知テストの「地図を
+            タップして選択」バナーは、以前は画面上部中央に単独で浮かべていたが、
+            この震度しきい値バー(震度凡例のカラーバー)のすぐ上に積み上げる形に
+            変更した。バー自体と同じコンテナ内でflex columnとして並べているため、
             (a) 位置(縦画面=左上/横画面=右下)が自動的にバーと揃い、
             (b) バーが無い場合(showRealtimeMapLayersがfalse)でもバナー単独で
             正しい位置に表示できる。表示条件はバー単独の場合
             (showRealtimeMapLayers)とバナー単独の場合(pick中)の両方をORで
             まとめてコンテナごと出し分けている。 */}
-        {(showRealtimeMapLayers || tsunamiAreaPickActive || eewEpicenterPickActive) && (
+        {(showRealtimeMapLayers || tsunamiAreaPickActive || eewEpicenterPickActive || shakeTestEpicenterPickActive) && (
           <div style={isWide ? {
             position: "absolute",
             right: 16,
@@ -17602,6 +17591,31 @@ export default function App() {
                 <PressableButton
                   type="button"
                   onClick={() => handleTestEewAction("cancelEpicenterPick")}
+                  style={{
+                    flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
+                    background: `rgba(${themeContextValue.tokens.ink},0.08)`,
+                    fontSize: 12, fontWeight: 700, color: themeContextValue.tokens.textSecondary,
+                  }}
+                >
+                  キャンセル
+                </PressableButton>
+              </Glass>
+            )}
+
+            {/* 地震検知テスト「地図をタップして震源を指定」中のバナー。EEWの震源ピックと同じ構成。 */}
+            {shakeTestEpicenterPickActive && (
+              <Glass radius={22} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+                maxWidth: "calc(100vw - 32px)",
+                animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
+              }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: themeContextValue.tokens.text }}>
+                  地図をタップして震源を指定(地震検知テスト)
+                </span>
+                <PressableButton
+                  type="button"
+                  onClick={() => handleShakeTestAction("cancelEpicenterPick")}
                   style={{
                     flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
                     background: `rgba(${themeContextValue.tokens.ink},0.08)`,
