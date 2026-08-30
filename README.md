@@ -1,12 +1,10 @@
 # MeteoQuake-KyoshinViewer
 地震・津波情報、気象情報を閲覧することができます。
-
 アプリ内のタブごとに、以下の情報を確認することができます。
 
 ### **リアルタイム震度**
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/6f18089b-818d-495b-9cc3-c3103e849489" />
-
-
+   防災科研の強震モニタを元にしたリアルタイム震度を表示します。また地震発生直後に、気象庁から発表される緊急地震速報を表示します。
 
 ### **地震情報**
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/c5297fdd-1c50-4b18-bb80-b0be32356a59" />
