@@ -4,7 +4,7 @@
 
 ### **リアルタイム震度**
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/6f18089b-818d-495b-9cc3-c3103e849489" />
-   防災科研の強震モニタを元にしたリアルタイム震度を表示します。また地震発生直後に、気象庁から発表される緊急地震速報を表示します。
+   防災科研の強震モニタを元にしたリアルタイム震度を表示します。また地震発生直後に、気象庁から発表される緊急地震速報を表示します。 (※ 強震モニタは、揺れの様子を直感的に捉えることを目的としています。また、リアルタイムで観測値を処理しているため、ノイズ等により観測値が変動します。 そのため、本アプリケーションで表示される観測値は、あくまで参考値としてご利用ください。)
 
 ### **地震情報**
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/c5297fdd-1c50-4b18-bb80-b0be32356a59" />
@@ -44,6 +44,8 @@
   - [umishiru-snet-shindo](https://github.com/t0729/umishiru-snet-shindo) 
 ([t0729](https://github.com/t0729)氏)
   - [S-net_Viewer](https://github.com/Ichihai1415/S-net_Viewer) ([Ichihai1415](https://github.com/Ichihai1415)氏) を参考にしました。
+- 本プログラムの地震検知プログラムは
+  - []
 
 #### 参考にした記事
 - [Ichihai1415](https://github.com/Ichihai1415)氏: [震度データベースの地震一覧を取得する](https://qiita.com/Ichihai1415/items/a2af335ad68224b1280f)
