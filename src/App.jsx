@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.1";
+const APP_VERSION = "0.7.3";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9629,7 +9629,12 @@ function BottomDock({
             alignItems: "flex-start",
             gap: 6,
           }}>
-            {shakeTests && shakeTests.length > 0 && <ShakeTestRunningBadge/>}
+            {shakeTests && shakeTests.length > 0 && (
+              <ShakeTestRunningBadge
+                count={shakeTests.length}
+                onStop={() => onShakeTestAction?.("stop")}
+              />
+            )}
             <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
           </div>,
           document.body
@@ -9645,7 +9650,12 @@ function BottomDock({
           alignItems: "flex-start",
           gap: 6,
         }}>
-          {shakeTests && shakeTests.length > 0 && <ShakeTestRunningBadge/>}
+          {shakeTests && shakeTests.length > 0 && (
+            <ShakeTestRunningBadge
+              count={shakeTests.length}
+              onStop={() => onShakeTestAction?.("stop")}
+            />
+          )}
           <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
         </div>
         )
@@ -10661,15 +10671,18 @@ function ShakeEventCard({ event }) {
 // RealtimeDataTimeBadgeのすぐ上に添える小さなインジケーター。
 // 常時表示のRealtimeDataTimeBadgeより控えめに(フォントサイズ・パディングとも
 // 一回り小さく)することで、あくまで補助的な表示であることを示す。
-function ShakeTestRunningBadge() {
+// 以前は画面上部中央に別のバナー(警告文+停止ボタン)を出していたが、
+// この場所に統合し、停止ボタンもここへ移動した。
+function ShakeTestRunningBadge({ count = 1, onStop }) {
   return (
     <Glass
       radius={999}
       style={{
-        padding: "0 10px",
+        padding: "0 6px 0 10px",
         height: 20,
         display: "inline-flex",
         alignItems: "center",
+        gap: 6,
       }}
     >
       <span
@@ -10679,13 +10692,31 @@ function ShakeTestRunningBadge() {
           fontSize: 9,
           fontWeight: 700,
           letterSpacing: 0.2,
+          lineHeight: "20px",
           color: "#FF9F0A",
           whiteSpace: "nowrap",
           pointerEvents: "none",
         }}
       >
-        検知テスト実行中
+        検知テスト実行中{count > 1 ? `(${count}件)` : ""}
       </span>
+      <PressableButton
+        type="button"
+        onClick={onStop}
+        style={{
+          position: "relative", zIndex: 1,
+          flexShrink: 0, border: "none", cursor: "pointer",
+          borderRadius: 999,
+          padding: "0 8px",
+          height: 14,
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(255,159,10,0.22)",
+          fontSize: 8, fontWeight: 700, lineHeight: "14px",
+          color: "#FF9F0A", whiteSpace: "nowrap",
+        }}
+      >
+        {count > 1 ? "すべて停止" : "停止"}
+      </PressableButton>
     </Glass>
   );
 }
@@ -17511,42 +17542,6 @@ export default function App() {
                 }}
               >
                 キャンセル
-              </PressableButton>
-            </Glass>
-          </div>
-        )}
-
-        {/* 地震検知テストのシミュレーション実行中バナー — 実データと混同しないよう、
-            どのタブを見ていても常に分かるように画面上部中央に出す。 */}
-        {shakeTests.length > 0 && (
-          <div style={{
-            position: "absolute",
-            top: "calc(16px + env(safe-area-inset-top))",
-            left: 0, right: 0,
-            display: "flex", justifyContent: "center",
-            zIndex: 30, padding: "0 16px",
-            pointerEvents: "none",
-          }}>
-            <Glass radius={22} tintColor="#FF9F0A" style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "8px 8px 8px 14px",
-              animation: "appear 0.3s cubic-bezier(.25,1,.5,1)",
-              pointerEvents: "auto",
-            }}>
-              <span style={{ position: "relative", zIndex: 1, fontSize: 12.5, fontWeight: 700, color: "#FF9F0A" }}>
-                ⚠️ 地震検知テスト実行中{shakeTests.length > 1 ? `(${shakeTests.length}件、実際の地震ではありません)` : "(実際の地震ではありません)"}
-              </span>
-              <PressableButton
-                type="button"
-                onClick={() => handleShakeTestAction("stop")}
-                style={{
-                  position: "relative", zIndex: 1,
-                  flexShrink: 0, padding: "6px 12px", borderRadius: 999, border: "none", cursor: "pointer",
-                  background: "rgba(255,159,10,0.22)",
-                  fontSize: 12, fontWeight: 700, color: "#FF9F0A",
-                }}
-              >
-                {shakeTests.length > 1 ? "すべて停止" : "停止"}
               </PressableButton>
             </Glass>
           </div>
