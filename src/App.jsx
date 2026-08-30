@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.0";
+const APP_VERSION = "0.7.1";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -9611,7 +9611,11 @@ function BottomDock({
           出すため、wideAnchorRect.right基準にする(wideAnchorRect.leftだと
           水平方向はガラスの内側に収まってしまい、フローティングの中に
           埋もれて見えるため)。狭い画面(縦持ち)では、他の戻るボタンと
-          同様にcurrentHeight基準でパネル上端付近に追従させる。 */}
+          同様にcurrentHeight基準でパネル上端付近に追従させる。
+          地震検知テスト(実験的機能)実行中は、ShakeTestRunningBadgeを
+          RealtimeDataTimeBadgeの直上に小さく重ねて表示する(flex column
+          で積み上げ、bottomのみ指定することでコンテナが上方向に伸びる
+          形にしている)。 */}
       {selectedQuakeId == null && selectedTsunamiId == null
         && selectedTideStationCode == null && realtimeDataTime && (
         isWide && wideAnchorRect ? createPortal(
@@ -9620,7 +9624,12 @@ function BottomDock({
             left: wideAnchorRect.right + 12,
             bottom: 16,
             zIndex: 50,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            gap: 6,
           }}>
+            {shakeTests && shakeTests.length > 0 && <ShakeTestRunningBadge/>}
             <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
           </div>,
           document.body
@@ -9631,7 +9640,12 @@ function BottomDock({
           bottom: currentHeight + NAV_ROW_HEIGHT + 8,
           transition: isDragging ? "none" : "bottom 0.4s cubic-bezier(.22,1,.36,1)",
           zIndex: 10,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-start",
+          gap: 6,
         }}>
+          {shakeTests && shakeTests.length > 0 && <ShakeTestRunningBadge/>}
           <RealtimeDataTimeBadge dataTime={realtimeDataTime}/>
         </div>
         )
@@ -10640,6 +10654,39 @@ function ShakeEventCard({ event }) {
         </div>
       </Glass>
     </div>
+  );
+}
+
+// 地震検知テスト(実験的機能、shakeTestSimulation.ts)実行中であることを示す、
+// RealtimeDataTimeBadgeのすぐ上に添える小さなインジケーター。
+// 常時表示のRealtimeDataTimeBadgeより控えめに(フォントサイズ・パディングとも
+// 一回り小さく)することで、あくまで補助的な表示であることを示す。
+function ShakeTestRunningBadge() {
+  return (
+    <Glass
+      radius={999}
+      style={{
+        padding: "0 10px",
+        height: 20,
+        display: "inline-flex",
+        alignItems: "center",
+      }}
+    >
+      <span
+        style={{
+          position: "relative",
+          zIndex: 1,
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: 0.2,
+          color: "#FF9F0A",
+          whiteSpace: "nowrap",
+          pointerEvents: "none",
+        }}
+      >
+        検知テスト実行中
+      </span>
+    </Glass>
   );
 }
 
