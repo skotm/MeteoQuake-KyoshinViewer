@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.9";
+const APP_VERSION = "0.7.0";
 
 /* ─────────────────────────────────────────────────────
    IN-APP DEBUG LOG
@@ -3934,24 +3934,28 @@ const BOUNDARY_LINE_COLORS = {
    認証ではない)。ユーザーが設定タブ「詳細設定」から入力し、
    localStorageに保存する。デフォルトは空文字(未設定)。
    ───────────────────────────────────────────────────── */
-const REALTIME_API_TOKEN_STORAGE_KEY = "realtimeApiToken";
-
-function loadStoredRealtimeApiToken() {
-  try {
-    return localStorage.getItem(REALTIME_API_TOKEN_STORAGE_KEY) ?? "";
-  } catch (err) {
-    console.warn("リアルタイムAPIトークンの設定を読み込めませんでした:", err);
-    return "";
-  }
-}
-
-function saveRealtimeApiToken(token) {
-  try {
-    localStorage.setItem(REALTIME_API_TOKEN_STORAGE_KEY, token);
-  } catch (err) {
-    console.warn("リアルタイムAPIトークンの設定を保存できませんでした:", err);
-  }
-}
+// 【廃止】APIトークンが未設定でも利用できるようになったため、トークン入力
+// 機能を廃止した。将来また導入する可能性があるため削除はせずコメントアウト
+// している(復元する場合はこのブロックと、下記の関連箇所を全てコメント解除
+// すること)。
+// const REALTIME_API_TOKEN_STORAGE_KEY = "realtimeApiToken";
+//
+// function loadStoredRealtimeApiToken() {
+//   try {
+//     return localStorage.getItem(REALTIME_API_TOKEN_STORAGE_KEY) ?? "";
+//   } catch (err) {
+//     console.warn("リアルタイムAPIトークンの設定を読み込めませんでした:", err);
+//     return "";
+//   }
+// }
+//
+// function saveRealtimeApiToken(token) {
+//   try {
+//     localStorage.setItem(REALTIME_API_TOKEN_STORAGE_KEY, token);
+//   } catch (err) {
+//     console.warn("リアルタイムAPIトークンの設定を保存できませんでした:", err);
+//   }
+// }
 
 const REALTIME_API_BASE_URL = "https://meteoquake-realtime-collector.skotm.workers.dev";
 
@@ -8435,7 +8439,7 @@ function BottomDock({
   quakeFetchLimit, onChangeQuakeFetchLimit,
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
-  realtimeApiToken, onChangeRealtimeApiToken,
+  // realtimeApiToken, onChangeRealtimeApiToken, // 【廃止】APIトークン入力機能廃止に伴いコメントアウト
   replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
@@ -10004,9 +10008,9 @@ function BottomDock({
                   onChangeStationListDisplayMode={onChangeStationListDisplayMode}
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={onChangeExperimentalFeaturesEnabled}
-                  realtimeApiToken={realtimeApiToken}
+                  /* realtimeApiToken={realtimeApiToken} */
                   replayPlayer={replayPlayer}
-                  onChangeRealtimeApiToken={onChangeRealtimeApiToken}
+                  /* onChangeRealtimeApiToken={onChangeRealtimeApiToken} */
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={onChangeRealtimeRisingEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
@@ -12791,7 +12795,8 @@ const TAB_SETTINGS_CATEGORIES = [
 const SETTINGS_ITEMS = {
   advanced: [
     { id: "appearance", label: "外観" },
-    { id: "realtimeApi", label: "リアルタイムAPI" },
+    // 【廃止】APIトークン入力機能を廃止したため、設定メニューからも除外。
+    // { id: "realtimeApi", label: "リアルタイムAPI" },
     { id: "replay", label: "リプレイ" },
     { id: "experimental", label: "実験的・テスト機能" },
     { id: "logs", label: "ログ" },
@@ -14443,7 +14448,7 @@ function SettingsBody({
   quakeFetchLimit, onChangeQuakeFetchLimit,
   stationListDisplayMode, onChangeStationListDisplayMode,
   experimentalFeaturesEnabled, onChangeExperimentalFeaturesEnabled,
-  realtimeApiToken, onChangeRealtimeApiToken,
+  // realtimeApiToken, onChangeRealtimeApiToken, // 【廃止】APIトークン入力機能廃止に伴いコメントアウト
   replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
@@ -14679,6 +14684,11 @@ function SettingsBody({
     );
   }
 
+  // 【廃止】APIトークン入力機能を廃止したため、この設定画面自体をコメント
+  // アウトしている(設定メニュー側の項目も併せてコメントアウト済み)。
+  // 復元する場合は、このブロックと設定メニュー項目・状態管理・propsの
+  // バケツリレー箇所を全てコメント解除すること。
+  /*
   // リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン設定。
   // 「外観」と同じ実装パターン(SettingsCard内にコントロールを1つ置く形)。
   if (category === "advanced" && leaf === "realtimeApi") {
@@ -14720,6 +14730,7 @@ function SettingsBody({
       </>
     );
   }
+  */
 
   // リプレイファイル(バックフィルサーバーで生成した過去データ)の読み込み・
   // 再生コントロール。「リアルタイムAPI」と同じ実装パターン。
@@ -15135,17 +15146,20 @@ export default function App() {
     }
   }, [activeNav, realtimeEverActivated]);
 
-  // リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン。
-  // 設定タブ「詳細設定」から入力・変更できる。
-  const [realtimeApiToken, setRealtimeApiToken] = useState(loadStoredRealtimeApiToken);
-  const updateRealtimeApiToken = useCallback((token) => {
-    setRealtimeApiToken(token);
-    saveRealtimeApiToken(token);
-  }, []);
+  // 【廃止】リアルタイムタブ(強震モニタ/S-net)配信APIのアクセストークン。
+  // 設定タブ「詳細設定」から入力・変更できた(トークン入力機能自体を廃止した
+  // ため、状態管理ごとコメントアウト。復元する場合はコメント解除の上、下の
+  // useRealtimeStream呼び出しも元の第3引数(realtimeApiToken)に戻すこと)。
+  // const [realtimeApiToken, setRealtimeApiToken] = useState(loadStoredRealtimeApiToken);
+  // const updateRealtimeApiToken = useCallback((token) => {
+  //   setRealtimeApiToken(token);
+  //   saveRealtimeApiToken(token);
+  // }, []);
 
   // 上記の通り、一度リアルタイムタブを開けば以降はアプリを閉じる
   // (このコンポーネントがアンマウントされる)までWS接続を維持し続ける。
-  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, realtimeEverActivated, realtimeApiToken);
+  // トークン入力機能廃止に伴い、第3引数は空文字固定(未設定扱い)にしている。
+  const realtimeStream = useRealtimeStream(REALTIME_API_BASE_URL, realtimeEverActivated, "");
 
   // リプレイファイル(バックフィルサーバーで生成した過去データ)の再生。
   // 読み込みは設定タブ「詳細設定」から行う。値の実際の合成(シミュレーションとの
@@ -17630,9 +17644,9 @@ export default function App() {
                   onChangeStationListDisplayMode={handleChangeStationListDisplayMode}
                   experimentalFeaturesEnabled={experimentalFeaturesEnabled}
                   onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
-                  realtimeApiToken={realtimeApiToken}
+                  /* realtimeApiToken={realtimeApiToken} */
                   replayPlayer={replayPlayer}
-                  onChangeRealtimeApiToken={updateRealtimeApiToken}
+                  /* onChangeRealtimeApiToken={updateRealtimeApiToken} */
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
@@ -17740,9 +17754,9 @@ export default function App() {
               onChangeStationListDisplayMode={handleChangeStationListDisplayMode}
               experimentalFeaturesEnabled={experimentalFeaturesEnabled}
               onChangeExperimentalFeaturesEnabled={handleChangeExperimentalFeaturesEnabled}
-              realtimeApiToken={realtimeApiToken}
+              /* realtimeApiToken={realtimeApiToken} */
               replayPlayer={replayPlayer}
-              onChangeRealtimeApiToken={updateRealtimeApiToken}
+              /* onChangeRealtimeApiToken={updateRealtimeApiToken} */
               realtimeRisingEnabled={realtimeRisingEnabled}
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
               shakeDetectionEnabled={shakeDetectionEnabled}
