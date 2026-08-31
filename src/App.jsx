@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.8";
+const APP_VERSION = "0.7.9";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
@@ -1319,6 +1319,15 @@ function MapCanvas({
   realtimeValues = EMPTY_REALTIME_VALUES,
   realtimeIntensityThreshold = SHINDO_MIN_INTENSITY,
   realtimeRisingEnabled = false,
+  // リプレイ再生中のみ意味を持つ設定。呼び出し側(App)で
+  // replayPlayer.loaded && replayJmaColorEnabled(設定トグル)のANDを
+  // 取った上で渡してくるため、ここでは素直に参照するだけでよい。
+  replayJmaColorEnabled = false,
+  // リプレイ再生中かどうか、およびその再生速度倍率。震源推定のP波/S波
+  // 到達円のアニメーション speed を、実際の壁時計時刻ではなくリプレイの
+  // 再生速度に同期させるために使う(詳細は該当useEffectのコメント参照)。
+  replayActive = false,
+  replaySpeed = 1,
   shakeDetectionEnabled = true,
   onShakeEventsChange,
   // 震源推定(epicenterEstimation.ts、実験的機能)。デフォルトOFF。
@@ -2487,6 +2496,9 @@ function MapCanvas({
           const prevValue = prevValues.get(s.id);
           const isRising = !isOceanBottom && prevValue != null && value > prevValue;
           dotColor = isRising ? "#FFE13B" : calmColor;
+        } else if (replayJmaColorEnabled) {
+          // リプレイ再生中のみ選択できる、気象庁震度階級への換算表示。
+          dotColor = replayJmaColorFor(value);
         } else {
           dotColor = intensityToShindoColor(value);
         }
@@ -2578,7 +2590,7 @@ function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -2641,6 +2653,17 @@ function MapCanvas({
   // OFFの間は空のMapになる(上のuseEffectで管理)ため、ここでは
   // epicenterEstimationEnabled自体の判定はせず素直に参照するだけでよい
   // (レイヤーの表示/非表示は別のuseEffectがvisibilityで制御する)。
+  //
+  // 【リプレイ再生時の速度同期について】result.originTime(推定震源時刻)は
+  // 検知イベントのdetectedAt(shakeDetectionEnabled、processTick呼び出し時に
+  // Date.now()で打刻)から算出されるため、実時刻(壁時計)のエポックに
+  // 紐づいている。そのため、円の「経過時間」を単純にreplayPlayerの
+  // dataTime基準の時刻に置き換えると、エポックが噛み合わず(dataTimeは
+  // 録画当時の過去の時刻であるため)不正な値になってしまう。
+  // そこで、円の成長も同じ壁時計エポックのまま、実際に経過した壁時計時間に
+  // 再生速度(replaySpeed)を掛けることで「速度に応じて速く/遅く進んで
+  // 見える」ようにする(再生していない/リプレイでない間はreplaySpeed=1と
+  // 等価な従来通りの実時間表示のまま)。
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== "ready") return;
@@ -2655,11 +2678,12 @@ function MapCanvas({
         const pFeatures = [];
         const sFeatures = [];
         const now = Date.now();
+        const speedMultiplier = replayActive ? replaySpeed : 1;
 
         if (estimates && estimates.size > 0) {
           for (const result of estimates.values()) {
             if (!result || result.lat == null || result.lon == null || result.originTime == null) continue;
-            const elapsedSec = (now - result.originTime) / 1000;
+            const elapsedSec = ((now - result.originTime) * speedMultiplier) / 1000;
             const pRadiusKm = eewWaveSurfaceRadiusKm(elapsedSec, result.depthKm, EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S);
             const sRadiusKm = eewWaveSurfaceRadiusKm(elapsedSec, result.depthKm, EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S);
             const pRing = eewCirclePolygon(result.lat, result.lon, pRadiusKm);
@@ -2679,7 +2703,7 @@ function MapCanvas({
     frameId = requestAnimationFrame(tick);
 
     return () => { if (frameId != null) cancelAnimationFrame(frameId); };
-  }, [status]);
+  }, [status, replayActive, replaySpeed]);
 
   // 緊急地震速報: areas[]に予測震度がある場合、その地域を細分区域.json上で
   // 名前が一致するポリゴンを探し、震度の色で塗りつぶす。P/S波の円と違って
@@ -4100,6 +4124,41 @@ const QUAKE_COLOR_SCHEMES = {
 // 現在選択中の震度配色スキームID("legacy" | "jma" | "fill")を
 // アプリ全体に配るコンテキスト。地図・バッジ・凡例など離れた場所からでも
 // props バケツリレーせずに参照できるようにする。
+// 【リプレイ再生時の震度階級表示】観測点の色を、強震モニタ本来の連続配色
+// (shindoColorScale.ts)ではなく気象庁の震度階級に換算して表示する
+// (replayJmaColorEnabled)場合の配色。震度1(計測震度0.5)以上は
+// QUAKE_COLOR_SCHEMES.jmaの色をそのまま使うが、震度0は気象庁の指針では
+// 単一の薄いグレー(colors["0"])で一括りにされてしまい、平常時との差が
+// 見えなくなる。そこで、計測震度-1.0〜0.4の範囲だけは「透明→薄グレー→
+// グレー」の3点グラデーションにして、震度0の中でも実際の揺れの強さの
+// 違いがうっすら見えるようにする(0.4〜0.5未満はグレーのまま)。
+const REPLAY_JMA_SUBTHRESHOLD_MIN = -1.0;
+const REPLAY_JMA_SUBTHRESHOLD_MID = -0.3; // 透明→薄グレーと薄グレー→グレーの折り返し点
+const REPLAY_JMA_SUBTHRESHOLD_MAX = 0.4;
+const REPLAY_JMA_SUBTHRESHOLD_RGB = "142,142,147"; // iOSのsystemGray相当
+const REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA = 0.35; // 「薄グレー」時点の不透明度
+const REPLAY_JMA_SUBTHRESHOLD_MAX_ALPHA = 0.75; // 「グレー」時点の不透明度
+
+function replayJmaColorFor(value) {
+  if (value == null || Number.isNaN(value)) {
+    return QUAKE_COLOR_SCHEMES.jma.colors["?"].bg;
+  }
+  if (value < 0.5) {
+    const v = Math.min(Math.max(value, REPLAY_JMA_SUBTHRESHOLD_MIN), REPLAY_JMA_SUBTHRESHOLD_MAX);
+    let alpha;
+    if (v <= REPLAY_JMA_SUBTHRESHOLD_MID) {
+      const t = (v - REPLAY_JMA_SUBTHRESHOLD_MIN) / (REPLAY_JMA_SUBTHRESHOLD_MID - REPLAY_JMA_SUBTHRESHOLD_MIN);
+      alpha = t * REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA;
+    } else {
+      const t = (v - REPLAY_JMA_SUBTHRESHOLD_MID) / (REPLAY_JMA_SUBTHRESHOLD_MAX - REPLAY_JMA_SUBTHRESHOLD_MID);
+      alpha = REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA + t * (REPLAY_JMA_SUBTHRESHOLD_MAX_ALPHA - REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA);
+    }
+    return `rgba(${REPLAY_JMA_SUBTHRESHOLD_RGB},${alpha.toFixed(2)})`;
+  }
+  const key = intensityValueToKey(value);
+  return QUAKE_COLOR_SCHEMES.jma.colors[key]?.bg ?? QUAKE_COLOR_SCHEMES.jma.colors["?"].bg;
+}
+
 const QuakeColorSchemeContext = createContext("legacy");
 
 // 震度配色スキームの選択はブラウザのlocalStorageに保存し、次回起動時も覚えておく。
@@ -4342,6 +4401,35 @@ function saveRealtimeRisingEnabled(enabled) {
     localStorage.setItem(REALTIME_RISING_ENABLED_STORAGE_KEY, String(enabled));
   } catch (err) {
     console.warn("震度上昇中レイヤーの表示設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
+   リプレイ再生中のみ選択できる、観測点の色を気象庁震度階級に換算して
+   表示する設定のON/OFF。デフォルトOFF(=強震モニタ本来の連続配色)。
+   リプレイ再生中でなければこの設定自体が意味を持たない(App側で
+   replayPlayer.loadedとのANDを取ってMapCanvasへ渡す)が、設定値自体は
+   トグルの状態としてlocalStorageに保存し、次回リプレイ再生時にも
+   覚えておく。
+   ───────────────────────────────────────────────────── */
+const REPLAY_JMA_COLOR_ENABLED_STORAGE_KEY = "replayJmaColorEnabled";
+
+function loadStoredReplayJmaColorEnabled() {
+  try {
+    const saved = localStorage.getItem(REPLAY_JMA_COLOR_ENABLED_STORAGE_KEY);
+    if (saved === "true") return true;
+    if (saved === "false") return false;
+  } catch (err) {
+    console.warn("リプレイの震度階級表示設定を読み込めませんでした:", err);
+  }
+  return false;
+}
+
+function saveReplayJmaColorEnabled(enabled) {
+  try {
+    localStorage.setItem(REPLAY_JMA_COLOR_ENABLED_STORAGE_KEY, String(enabled));
+  } catch (err) {
+    console.warn("リプレイの震度階級表示設定を保存できませんでした:", err);
   }
 }
 
@@ -8493,6 +8581,7 @@ function BottomDock({
   // realtimeApiToken, onChangeRealtimeApiToken, // 【廃止】APIトークン入力機能廃止に伴いコメントアウト
   replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
+  replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
   shakeEvents = EMPTY_EQDB_LIST,
@@ -10088,6 +10177,8 @@ function BottomDock({
                   /* onChangeRealtimeApiToken={onChangeRealtimeApiToken} */
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={onChangeRealtimeRisingEnabled}
+                  replayJmaColorEnabled={replayJmaColorEnabled}
+                  onChangeReplayJmaColorEnabled={onChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={onChangeShakeDetectionEnabled}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
@@ -14640,6 +14731,7 @@ function SettingsBody({
   // realtimeApiToken, onChangeRealtimeApiToken, // 【廃止】APIトークン入力機能廃止に伴いコメントアウト
   replayPlayer,
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
+  replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
@@ -15022,6 +15114,19 @@ function SettingsBody({
             )}
           </div>
         </SettingsCard>
+
+        {/* 観測点の色を気象庁震度階級に換算して表示する設定。リプレイ再生時
+            (ファイル読み込み後)のみ意味を持つため、その間だけ表示する。 */}
+        {replayPlayer.loaded && (
+          <SettingsCard>
+            <SettingsToggleRow
+              label="震度階級で表示"
+              description="観測点の色を、強震モニタ本来の連続配色ではなく気象庁の震度階級に換算して表示します。計測震度-1.0〜0.4の間は透明→薄いグレー→グレーの段階で表示し、震度0の中での揺れの強さの違いも見えるようにしています。"
+              checked={replayJmaColorEnabled}
+              onChange={() => onChangeReplayJmaColorEnabled(!replayJmaColorEnabled)}
+            />
+          </SettingsCard>
+        )}
       </>
     );
   }
@@ -15619,6 +15724,15 @@ export default function App() {
   function handleChangeRealtimeRisingEnabled(next) {
     setRealtimeRisingEnabledState(next);
     saveRealtimeRisingEnabled(next);
+  }
+
+  // リプレイ再生中のみ選択できる、観測点の色を気象庁震度階級に換算して
+  // 表示する設定のON/OFF。localStorageに永続化する。
+  const [replayJmaColorEnabled, setReplayJmaColorEnabledState] = useState(loadStoredReplayJmaColorEnabled);
+
+  function handleChangeReplayJmaColorEnabled(next) {
+    setReplayJmaColorEnabledState(next);
+    saveReplayJmaColorEnabled(next);
   }
 
   // 揺れ検知エンジン(shakeDetection.ts)自体のON/OFF。設定タブ(タブ設定 >
@@ -17628,6 +17742,9 @@ export default function App() {
           realtimeValues={effectiveRealtimeValues}
           realtimeIntensityThreshold={realtimeIntensityThreshold}
           realtimeRisingEnabled={realtimeRisingEnabled}
+          replayJmaColorEnabled={replayPlayer.loaded && replayJmaColorEnabled}
+          replayActive={replayPlayer.loaded}
+          replaySpeed={replayPlayer.speed}
           shakeDetectionEnabled={shakeDetectionEnabled}
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
@@ -17926,6 +18043,8 @@ export default function App() {
                   /* onChangeRealtimeApiToken={updateRealtimeApiToken} */
                   realtimeRisingEnabled={realtimeRisingEnabled}
                   onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+                  replayJmaColorEnabled={replayJmaColorEnabled}
+                  onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
@@ -18036,6 +18155,8 @@ export default function App() {
               /* onChangeRealtimeApiToken={updateRealtimeApiToken} */
               realtimeRisingEnabled={realtimeRisingEnabled}
               onChangeRealtimeRisingEnabled={handleChangeRealtimeRisingEnabled}
+              replayJmaColorEnabled={replayJmaColorEnabled}
+              onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
               shakeDetectionEnabled={shakeDetectionEnabled}
               onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
               epicenterEstimationEnabled={epicenterEstimationEnabled}
