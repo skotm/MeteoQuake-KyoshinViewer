@@ -16,7 +16,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.9";
+const APP_VERSION = "0.8.9";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
@@ -2059,6 +2059,9 @@ function MapCanvas({
             type: "circle",
             source: "realtime-points",
             layout: { visibility: "none" },
+            // useIcon(下のrealtime-points-icon-layer参照)がtrueの点は、こちらの
+            // 円レイヤーでは描かない(アイコンレイヤー側で描く)。
+            filter: ["!=", ["get", "useIcon"], true],
             paint: {
               "circle-radius": [
                 "interpolate", ["linear"], ["zoom"],
@@ -2084,6 +2087,43 @@ function MapCanvas({
               "circle-stroke-color": ["case", ["get", "isDetected"], "#111111", "rgba(255,255,255,0.6)"],
             },
           });
+
+          // 【リプレイ再生時の震度階級表示】震度1(計測震度0.5)以上の観測点を、
+          // 円+単色ではなく、地震情報の観測点マーカーと全く同じ仕組み
+          // (station-icon-*-dot/num、registerStationIconsで生成済みの
+          // ビットマップ、選択中の配色スキームに追従)で表示するための
+          // レイヤー。震度0(0.5未満)は透明→薄グレー→グレーの連続グラデー
+          // ションのままにしたいため、そちらは従来通りrealtime-points-layer
+          // (円)側で描き、このレイヤーはfilterで震度1以上(useIcon:true)の
+          // 点だけを受け持つ。ソースはrealtime-points-layerと共有しており、
+          // JS側でfeatureごとにuseIconを計算して振り分けている
+          // (replayJmaColorEnabledがOFFの間はuseIcon:trueの点が存在しないため、
+          // このレイヤーには何も描かれない)。
+          map.addLayer({
+            id: "realtime-points-icon-layer",
+            type: "symbol",
+            source: "realtime-points",
+            filter: ["==", ["get", "useIcon"], true],
+            layout: {
+              visibility: "none",
+              "icon-image": [
+                "step", ["zoom"],
+                ["concat", "station-icon-", ["get", "intensityKey"], "-dot"],
+                6, ["concat", "station-icon-", ["get", "intensityKey"], "-num"],
+              ],
+              "icon-size": [
+                "interpolate", ["linear"], ["zoom"],
+                4, 5 / STATION_ICON_BASE_RADIUS,
+                7, 10 / STATION_ICON_BASE_RADIUS,
+                9, 14 / STATION_ICON_BASE_RADIUS,
+                11, 20 / STATION_ICON_BASE_RADIUS,
+                14, 30 / STATION_ICON_BASE_RADIUS,
+              ],
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+              "symbol-sort-key": ["get", "sortOrder"],
+            },
+          });
           map.on("mouseenter", "realtime-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
           });
@@ -2091,6 +2131,19 @@ function MapCanvas({
             map.getCanvas().style.cursor = "";
           });
           map.on("click", "realtime-points-layer", (e) => {
+            if (!e.features || !e.features.length) return;
+            setSelectedRealtimePoint(e.features[0].properties);
+          });
+          // 震度階級アイコン表示(realtime-points-icon-layer)側の点も、円の
+          // 点と同じくタップで選択・ホバーでポインタカーソルにする
+          // (見た目がアイコンに変わるだけで、操作性は変えないため)。
+          map.on("mouseenter", "realtime-points-icon-layer", () => {
+            map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", "realtime-points-icon-layer", () => {
+            map.getCanvas().style.cursor = "";
+          });
+          map.on("click", "realtime-points-icon-layer", (e) => {
             if (!e.features || !e.features.length) return;
             setSelectedRealtimePoint(e.features[0].properties);
           });
@@ -2328,6 +2381,17 @@ function MapCanvas({
       "visibility",
       showRealtimeMapLayers ? "visible" : "none"
     );
+    // 震度階級アイコン表示レイヤーも、本体(円レイヤー)と同じ条件で
+    // 出し分ける。useIcon:trueの点自体がreplayJmaColorEnabled時にしか
+    // 発生しないため、常時visible:showRealtimeMapLayers連動のままでよい
+    // (JMA表示OFF時はfeatureが無いので何も描かれない)。
+    if (map.getLayer("realtime-points-icon-layer")) {
+      map.setLayoutProperty(
+        "realtime-points-icon-layer",
+        "visibility",
+        showRealtimeMapLayers ? "visible" : "none"
+      );
+    }
     // 揺れ検知イベントのレイヤーも、強震モニタ本体が表示されている間だけ出す。
     if (map.getLayer("shake-events-layer")) {
       map.setLayoutProperty(
@@ -2466,6 +2530,16 @@ function MapCanvas({
     // 上書きする(以前のリング表示から変更し、観測点自体の色を差し替える
     // 方式にした)。
     //
+    // 【リプレイ再生時の震度階級表示】replayJmaColorEnabledがONの間、震度1
+    // (計測震度0.5)以上の点は、この円レイヤーではなくrealtime-points-
+    // icon-layer(地震情報の観測点マーカーと同じstation-icon-*画像、選択中の
+    // 配色スキームに追従)側で描く。この円レイヤー(realtime-points-layer)は
+    // filter(["!=",["get","useIcon"],true])でuseIcon:trueの点を除外している
+    // ため、useIconをtrueにした点はここでdotColorを計算しても実際には描かれ
+    // ない(無駄ではあるが、フィルタとプロパティの対応を単純にするため
+    // あえて分岐せず両方セットしている)。震度0はどちらのモードでも従来
+    // 通りこの円レイヤーの側でグラデーション表示する。
+    //
     // データが無い観測点は表示しない(要件により、灰色の点として
     // 出すのではなく配列自体から除外する)。さらに、震度しきい値バー
     // (RealtimeIntensityThresholdBar)で設定したrealtimeIntensityThreshold
@@ -2474,7 +2548,8 @@ function MapCanvas({
     // MapLibreのcircleレイヤーはsymbolレイヤーと違いsort-keyが無く、
     // 「GeoJSON中のfeatureの並び順=描画順(後に来るものが上に重なる)」
     // という仕様なので、震度の大きい観測点を上に見せるには配列自体を
-    // 震度の昇順(小さい→大きい)にソートしておく必要がある。
+    // 震度の昇順(小さい→大きい)にソートしておく必要がある
+    // (symbolレイヤー側はsymbol-sort-keyで別途制御している)。
     const prevValues = prevRealtimeValuesRef.current;
     const calmColor = intensityToShindoColor(SHINDO_MIN_INTENSITY);
     // 揺れ検知(shakeDetection.ts、実験的機能)で「検知済み」と判定された
@@ -2488,8 +2563,13 @@ function MapCanvas({
       .filter((s) => realtimeValues.has(s.id) && realtimeValues.get(s.id) >= realtimeIntensityThreshold)
       .map((s) => {
         const value = realtimeValues.get(s.id);
-        let dotColor;
-        if (realtimeRisingEnabled) {
+        const useIcon = replayJmaColorEnabled && !realtimeRisingEnabled && value >= 0.5;
+        let dotColor, intensityKey, sortOrder;
+        if (useIcon) {
+          const key = intensityValueToKey(value);
+          intensityKey = STATION_ICON_KEYS.includes(key) ? key : "0";
+          sortOrder = STATION_ICON_KEYS.indexOf(intensityKey);
+        } else if (realtimeRisingEnabled) {
           // 海底の観測点(id 5000以上、S-net等)は要件により上昇中判定の対象外。
           const idNum = Number(s.id);
           const isOceanBottom = Number.isFinite(idNum) && idNum >= 5000;
@@ -2497,8 +2577,9 @@ function MapCanvas({
           const isRising = !isOceanBottom && prevValue != null && value > prevValue;
           dotColor = isRising ? "#FFE13B" : calmColor;
         } else if (replayJmaColorEnabled) {
-          // リプレイ再生中のみ選択できる、気象庁震度階級への換算表示。
-          dotColor = replayJmaColorFor(value);
+          // リプレイ再生中のみ選択できる、気象庁震度階級への換算表示のうち、
+          // 震度0(0.5未満)の範囲。震度1以上はuseIcon側で処理済み。
+          dotColor = replayJmaSubthresholdColor(value);
         } else {
           dotColor = intensityToShindoColor(value);
         }
@@ -2513,6 +2594,9 @@ function MapCanvas({
             intensity: value,
             hasData: true,
             dotColor,
+            useIcon,
+            intensityKey,
+            sortOrder,
             isDetected: detectedStationIds.has(s.id),
           },
         };
@@ -4126,10 +4210,13 @@ const QUAKE_COLOR_SCHEMES = {
 // props バケツリレーせずに参照できるようにする。
 // 【リプレイ再生時の震度階級表示】観測点の色を、強震モニタ本来の連続配色
 // (shindoColorScale.ts)ではなく気象庁の震度階級に換算して表示する
-// (replayJmaColorEnabled)場合の配色。震度1(計測震度0.5)以上は
-// QUAKE_COLOR_SCHEMES.jmaの色をそのまま使うが、震度0は気象庁の指針では
-// 単一の薄いグレー(colors["0"])で一括りにされてしまい、平常時との差が
-// 見えなくなる。そこで、計測震度-1.0〜0.4の範囲だけは「透明→薄グレー→
+// (replayJmaColorEnabled)場合の、震度0(計測震度0.5未満)の配色。
+// 震度1以上は、地震情報の観測点マーカーと同じ仕組み(station-icon-*、
+// registerStationIconsで選択中の配色スキームに追従して生成済みのアイコン
+// 画像)で表示する(realtime-points-icon-layer参照)ため、この関数が使われる
+// のは震度0の範囲のみになる。気象庁の指針では震度0は単一の薄いグレー
+// (QUAKE_COLOR_SCHEMES.*.colors["0"])で一括りにされてしまい、平常時との差が
+// 見えなくなるため、代わりに計測震度-1.0〜0.4の範囲だけは「透明→薄グレー→
 // グレー」の3点グラデーションにして、震度0の中でも実際の揺れの強さの
 // 違いがうっすら見えるようにする(0.4〜0.5未満はグレーのまま)。
 const REPLAY_JMA_SUBTHRESHOLD_MIN = -1.0;
@@ -4139,24 +4226,17 @@ const REPLAY_JMA_SUBTHRESHOLD_RGB = "142,142,147"; // iOSのsystemGray相当
 const REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA = 0.35; // 「薄グレー」時点の不透明度
 const REPLAY_JMA_SUBTHRESHOLD_MAX_ALPHA = 0.75; // 「グレー」時点の不透明度
 
-function replayJmaColorFor(value) {
-  if (value == null || Number.isNaN(value)) {
-    return QUAKE_COLOR_SCHEMES.jma.colors["?"].bg;
+function replayJmaSubthresholdColor(value) {
+  const v = Math.min(Math.max(value ?? REPLAY_JMA_SUBTHRESHOLD_MIN, REPLAY_JMA_SUBTHRESHOLD_MIN), REPLAY_JMA_SUBTHRESHOLD_MAX);
+  let alpha;
+  if (v <= REPLAY_JMA_SUBTHRESHOLD_MID) {
+    const t = (v - REPLAY_JMA_SUBTHRESHOLD_MIN) / (REPLAY_JMA_SUBTHRESHOLD_MID - REPLAY_JMA_SUBTHRESHOLD_MIN);
+    alpha = t * REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA;
+  } else {
+    const t = (v - REPLAY_JMA_SUBTHRESHOLD_MID) / (REPLAY_JMA_SUBTHRESHOLD_MAX - REPLAY_JMA_SUBTHRESHOLD_MID);
+    alpha = REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA + t * (REPLAY_JMA_SUBTHRESHOLD_MAX_ALPHA - REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA);
   }
-  if (value < 0.5) {
-    const v = Math.min(Math.max(value, REPLAY_JMA_SUBTHRESHOLD_MIN), REPLAY_JMA_SUBTHRESHOLD_MAX);
-    let alpha;
-    if (v <= REPLAY_JMA_SUBTHRESHOLD_MID) {
-      const t = (v - REPLAY_JMA_SUBTHRESHOLD_MIN) / (REPLAY_JMA_SUBTHRESHOLD_MID - REPLAY_JMA_SUBTHRESHOLD_MIN);
-      alpha = t * REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA;
-    } else {
-      const t = (v - REPLAY_JMA_SUBTHRESHOLD_MID) / (REPLAY_JMA_SUBTHRESHOLD_MAX - REPLAY_JMA_SUBTHRESHOLD_MID);
-      alpha = REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA + t * (REPLAY_JMA_SUBTHRESHOLD_MAX_ALPHA - REPLAY_JMA_SUBTHRESHOLD_MID_ALPHA);
-    }
-    return `rgba(${REPLAY_JMA_SUBTHRESHOLD_RGB},${alpha.toFixed(2)})`;
-  }
-  const key = intensityValueToKey(value);
-  return QUAKE_COLOR_SCHEMES.jma.colors[key]?.bg ?? QUAKE_COLOR_SCHEMES.jma.colors["?"].bg;
+  return `rgba(${REPLAY_JMA_SUBTHRESHOLD_RGB},${alpha.toFixed(2)})`;
 }
 
 const QuakeColorSchemeContext = createContext("legacy");
@@ -15121,7 +15201,7 @@ function SettingsBody({
           <SettingsCard>
             <SettingsToggleRow
               label="震度階級で表示"
-              description="観測点の色を、強震モニタ本来の連続配色ではなく気象庁の震度階級に換算して表示します。計測震度-1.0〜0.4の間は透明→薄いグレー→グレーの段階で表示し、震度0の中での揺れの強さの違いも見えるようにしています。"
+              description="観測点の色を、強震モニタ本来の連続配色ではなく気象庁の震度階級に換算して表示します。震度1以上は地震情報の観測点マーカーと同じアイコン(設定中の震度配色に対応)、震度0(計測震度-1.0〜0.4)は透明→薄いグレー→グレーの段階で表示し、震度0の中での揺れの強さの違いも見えるようにしています。"
               checked={replayJmaColorEnabled}
               onChange={() => onChangeReplayJmaColorEnabled(!replayJmaColorEnabled)}
             />
