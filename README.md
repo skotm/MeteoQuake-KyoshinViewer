@@ -20,7 +20,7 @@
 
 [利用規約 - Term of use](https://github.com/skotm/MeteoQuake-KyoshinViewer/blob/main/public/terms-of-use.md)
 
-[プライバシーポリシー - privacy policy](https://github.com/skotm/MeteoQuake-Kyoshin Viewer/blob/main/public/privacy-policy.md)
+[プライバシーポリシー - privacy policy](https://github.com/skotm/MeteoQuake-KyoshinViewer/blob/main/public/privacy-policy.md)
 
 [注意事項 - notice](https://github.com/skotm/MeteoQuake-KyoshinViewer/blob/main/public/notices.md)
 
