@@ -1,5 +1,5 @@
 # MeteoQuake-KyoshinViewer
-地震・津波情報、気象情報を閲覧することができます。
+地震・津波情報を閲覧することができます。
 アプリ内のタブごとに、以下の情報を確認することができます。
 
 ### **リアルタイム震度**
@@ -15,7 +15,17 @@
   <img width="1278" height="590" alt="image" src="https://github.com/user-attachments/assets/dfae9d01-cbda-47ea-bb8a-07f27493bce4" />
 
   <div>地震等に伴い気象庁から発表される 大津波警報, 津波警報, 津波注意報, 津波予報 のデータを表示します。その他、津波を引き起こした地震や観測された津波の最大波(参考値)を確認することができます。
-  
+
+## 利用規約・注意事項について
+
+[利用規約 - Term of use](https://github.com/skotm/MeteoQuake-KyoshinViewer/blob/main/public/terms-of-use.md)
+
+[プライバシーポリシー - privacy policy](https://github.com/skotm/MeteoQuake-Kyoshin Viewer/blob/main/public/privacy-policy.md)
+
+[注意事項 - notice](https://github.com/skotm/MeteoQuake-KyoshinViewer/blob/main/public/notices.md)
+
+を必ずご確認の上ご利用ください。
+   
 
 ## クレジット・謝辞
 ### 出典
