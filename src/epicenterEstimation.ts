@@ -823,13 +823,44 @@ function destinationPoint(lat, lon, bearingDegVal, distDeg) {
  * estimateEpicenter内でグリッド中心を基準に1回だけ計算)を受け取るように
  * 変更した。
  */
+// 【対策: 検知点が少ない間の沖合への発散(レンジの不定性)】観測点が片側にしか
+// ない(海岸沿いの観測網+沖合の震源)状況では、到達時刻の分散だけでは震源までの
+// 距離(レンジ方向)がほとんど拘束されず、検知時刻のノイズに引きずられて解が
+// 沖へ大きくずれる傾向がある(合成テストで、検知6点のとき海岸から約30km沖の
+// 地震が平均で更に20〜35km沖に推定された)。S-netを着未着法から外す修正の
+// 前は、「S-netが未検知」という(実際には検知処理の対象外なだけの)偽の情報が
+// たまたまこの発散を抑えていたが、正しい情報ではないため取り除いた。代わりに、
+// 最初に検知した観測点(=通常は震源に最も近い観測点)から一定距離
+// (RANGE_PRIOR_FREE_KM)を超えて離れた候補に、超過分の走時相当の二乗に
+// 比例するペナルティ(到達時刻分散と同じms²単位)を加える。検知点が増えるほど
+// 観測データ自体が距離を拘束できるので、RANGE_PRIOR_FADE_START_POINTSから
+// RANGE_PRIOR_FADE_END_POINTSにかけて線形に0まで弱め、十分な点数では
+// 一切影響しないようにしている。
+const RANGE_PRIOR_FREE_KM = 60;
+const RANGE_PRIOR_WEIGHT = 0.02;
+const RANGE_PRIOR_FADE_START_POINTS = 6;
+const RANGE_PRIOR_FADE_END_POINTS = 16;
+
+function rangePriorPenalty(firstDistKm, pointCount) {
+  const fade = Math.max(0, Math.min(1,
+    (RANGE_PRIOR_FADE_END_POINTS - pointCount) / (RANGE_PRIOR_FADE_END_POINTS - RANGE_PRIOR_FADE_START_POINTS)));
+  if (fade <= 0) return 0;
+  const excessKm = firstDistKm - RANGE_PRIOR_FREE_KM;
+  if (excessKm <= 0) return 0;
+  const excessMs = (excessKm / P_WAVE_SPEED_KM_S) * 1000;
+  return RANGE_PRIOR_WEIGHT * fade * excessMs * excessMs;
+}
+
 function computeCoarseErrorLevel(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier = 1, spTimePenaltyMultiplier = 1) {
   const meanOriginTime = computeWeightedOriginTime(candidate, detections, detectionWeightById);
   if (meanOriginTime == null) return Infinity;
 
   let errorLevel = 0;
+  let firstDetectedAt = Infinity;
+  let firstDistKm = 0;
   for (const d of detections) {
     const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    if (d.detectedAt < firstDetectedAt) { firstDetectedAt = d.detectedAt; firstDistKm = distKm; }
     const tt = travelTimeMs(distKm, candidate.depthKm);
     const originTime = d.detectedAt - tt;
     const weight = detectionWeightById.get(d.id) ?? 0;
@@ -846,6 +877,7 @@ function computeCoarseErrorLevel(candidate, detections, detectionWeightById, amp
     // あたる。coarse・fine両方の段階から常時有効にしている。
     if (diff < 0) errorLevel += weight * diff * diff;
   }
+  errorLevel += rangePriorPenalty(firstDistKm, detections.length);
   errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier);
   // 【対策: 深さの推定誤差がとても大きい問題】S-P時間差ペナルティも、
   // 震度較正ペナルティと同じ理由(粗い探索の段階で既に深さ候補の絞り込みに
@@ -910,8 +942,11 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   if (meanOriginTime == null) return Infinity;
 
   let errorLevel = 0;
+  let firstDetectedAt = Infinity;
+  let firstDistKm = 0;
   for (const d of detections) {
     const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    if (d.detectedAt < firstDetectedAt) { firstDetectedAt = d.detectedAt; firstDistKm = distKm; }
     const tt = travelTimeMs(distKm, candidate.depthKm);
     const originTime = d.detectedAt - tt;
     const weight = detectionWeightById.get(d.id) ?? 0;
@@ -926,6 +961,7 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   // 分散だけでは区別しにくい候補同士(特に、観測点が一方向に偏っていて
   // 絶対距離が決まりにくい沖合の地震)を、震度パターンの物理的な説明の
   // 良さで追加的に絞り込む(詳細はcomputeAmplitudeCalibrationPenalty参照)。
+  errorLevel += rangePriorPenalty(firstDistKm, detections.length);
   errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier);
 
   // 【対策: 深さの推定誤差がとても大きい問題】S-P時間差による深さの
@@ -1283,6 +1319,12 @@ export class EpicenterEstimator {
     // stableDepthKm: 【対策: 深さの推定誤差がとても大きい問題】stablePos
     // (緯度経度)に加えて、深さも安定判定に含めるための記憶。
     this.cache = new Map(); // eventId -> { pointCount, result, stablePos, stableDepthKm, firstStableAt }
+  }
+
+  // データ源の切り替え(ShakeDetectionEngine.resetForSourceChange参照)時に、
+  // 切り替え前のイベントの推定キャッシュを破棄する。
+  reset() {
+    this.cache = new Map();
   }
 
   /**

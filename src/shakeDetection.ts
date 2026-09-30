@@ -1099,6 +1099,43 @@ export class ShakeDetectionEngine {
     // 呼び出し側(App.tsx)がsetExternalEstimates()経由で毎tick渡す想定。
     // イベント統合判定(canEventsMerge)で、粗い簡易チェックより優先して使う。
     this.externalEstimates = new Map();
+    // データ源の切り替え(リアルタイム⇔リプレイ・検知テスト)直後に検知を
+    // 一時的に無効化する期間の終了時刻(ms、processTickのnow基準)。
+    // resetForSourceChange()が設定する。0なら無効化期間なし。
+    this.suppressUntil = 0;
+  }
+
+  // 【データ源切り替え対策】リアルタイム震度⇔リプレイ・地震検知テストの
+  // 切り替え時に呼ぶ。観測点ごとの履歴・上昇状態・進行中のイベント・広域
+  // 拡大検知の追跡状態・外部の震源推定をすべて破棄し、切り替え前のデータ源
+  // の検知が新しいデータ源に持ち越されないようにする(観測点マスタ由来の
+  // 近傍点リストは残す)。あわせて、切り替え直後suppressMs(既定2秒)の間は
+  // 検知を無効化する。この間もprocessTickの値の更新(ステップ1)は行うため、
+  // 新しいデータ源の履歴(直近5秒平均等の基準)は無効化期間中に貯まり、
+  // 期間が明けた最初のtickから通常どおり検知できる。切り替え前後の値の
+  // ギャップを「急上昇」と誤検知しないよう、直前値(latest/prev)も
+  // nullに戻しているので、切り替え後の最初のtickは差分0として扱われる。
+  resetForSourceChange(now = Date.now(), suppressMs = 2000) {
+    for (const point of this.points.values()) {
+      point.prevIntensity = null;
+      point.latestIntensity = null;
+      point.intensityDiff = 0;
+      point.history = [];
+      point.avgDiff = null;
+      point.riseRateHistory = [];
+      point.riseRateMax10s = null;
+      point.lastRiseTick = null;
+      point.pendingSince = null;
+      point.eventId = null;
+      point.reactionStartAt = null;
+      point.lastReactionEndTick = null;
+      point.sWaveArrivalAt = null;
+      point.broadRiseCandidateSince = null;
+    }
+    this.events = new Map();
+    this.broadRiseClusters = [];
+    this.externalEstimates = new Map();
+    this.suppressUntil = now + suppressMs;
   }
 
   // 【対策C】App.tsx側でepicenterEstimation.tsのEpicenterEstimatorを実行した
@@ -1273,6 +1310,14 @@ export class ShakeDetectionEngine {
       } else {
         point.broadRiseCandidateSince = null;
       }
+    }
+
+    // 【データ源切り替え対策】resetForSourceChange()直後の無効化期間中は、
+    // 上のステップ1(値・履歴の更新)だけ行い、検知処理(ステップ2以降)と
+    // イベントの生成・更新はスキップする。
+    if (now < this.suppressUntil) {
+      this.broadRiseClusters = [];
+      return [];
     }
 
     // 2) 急上昇の判定。このtickで上がった観測点にtick番号を刻んでおく
