@@ -6,6 +6,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
 import { ShakeDetectionEngine } from "./shakeDetection";
 import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished, P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "./shakeTestSimulation";
 import { EpicenterEstimator } from "./epicenterEstimation";
+import { setJmaTravelTimeTable, tableFromJSON } from "./jmaTravelTime";
 
 /* ─────────────────────────────────────────────────────
    APP VERSION
@@ -16,7 +17,7 @@ import { EpicenterEstimator } from "./epicenterEstimation";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.8.9";
+const APP_VERSION = "0.6.0";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
@@ -2512,6 +2513,18 @@ function MapCanvas({
     shakeEngineRef.current.initialize(realtimeStations);
   }, [realtimeStations]);
 
+  // 【データ源切り替え対策】揺れ検知エンジンへ渡している震度値の出どころ。
+  // 優先順位はApp側のeffectiveRealtimeValuesと同じ(リプレイ再生中 >
+  // 地震検知テスト実行中 > 本物のリアルタイム)。この値が変わった(=リアルタイム
+  // ⇔リプレイ・検知テストの切り替え)tickで、検知エンジンと震源推定の状態を
+  // リセットし、直後2秒間は検知を無効化する(下のeffect参照)。テストが複数
+  // 同時実行中に増減しても、"test"のままなので切り替えとは扱わない。
+  const realtimeSourceMode = replayActive
+    ? "replay"
+    : (shakeTestTrueEpicenters.length > 0 ? "test" : "live");
+  const prevRealtimeSourceModeRef = useRef(realtimeSourceMode);
+  const SOURCE_CHANGE_DETECTION_SUPPRESS_MS = 2000;
+
   // リアルタイムタブのデータをGeoJSONに変換して地図へ反映する。
   // 呼び出し元(App)のuseRealtimeStreamが内部で最大2Hz(500ms間隔)に間引いて
   // いるので、ここでの再計算頻度もそれに揃う。表示中(showRealtimeMapLayers)で
@@ -2613,6 +2626,17 @@ function MapCanvas({
     }
     prevRealtimeValuesRef.current = nextValues;
 
+    // 【データ源切り替え対策】リアルタイム⇔リプレイ・検知テストが切り替わった
+    // 場合、それまでの検知(観測点の履歴・進行中のイベント・震源推定の
+    // キャッシュ)を破棄し、切り替え直後2秒間は検知を無効化する。
+    // 検知の有効/無効の設定に関わらず、切り替えは必ず記録する。
+    if (prevRealtimeSourceModeRef.current !== realtimeSourceMode) {
+      prevRealtimeSourceModeRef.current = realtimeSourceMode;
+      shakeEngineRef.current.resetForSourceChange(Date.now(), SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+      epicenterEstimatorRef.current.reset();
+      lastEpicenterEstimatesRef.current = new Map();
+    }
+
     // 揺れ検知エンジンを1tick分進める(設定でOFFの間は呼ばない)。
     // 近傍点リストが未構築(観測点マスタ未取得)の間は空配列が返る。
     const shakeEvents = shakeDetectionEnabled
@@ -2674,7 +2698,7 @@ function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -6156,6 +6180,25 @@ function loadStations() {
   if (stationsPromise) return stationsPromise;
   stationsPromise = cachedFetchJSON(`${import.meta.env.BASE_URL}map/stations_with_amp_revised.json`);
   return stationsPromise;
+}
+
+/* ─────────────────────────────────────────────────────
+   JMA2001走時表(震源推定、実験的機能)
+   epicenterEstimation.tsのtravelTimeMs・computeSpTimePenaltyが使う、
+   層構造を反映した理論走時テーブル。scripts/build-jma-travel-time.mjsで
+   気象庁の配布データから生成する(詳細はそのスクリプトとjmaTravelTime.ts
+   のコメント参照)。
+   ファイル構成:
+     public/
+     └─ jma-travel-time.json  (無くてもアプリは動く。無い場合epicenter
+                                Estimation.ts側が自動的に従来の定速モデルに
+                                フォールバックする)
+   ───────────────────────────────────────────────────── */
+let jmaTravelTimeTablePromise = null;
+function loadJmaTravelTimeTable() {
+  if (jmaTravelTimeTablePromise) return jmaTravelTimeTablePromise;
+  jmaTravelTimeTablePromise = cachedFetchJSON(`${import.meta.env.BASE_URL}jma-travel-time.json`);
+  return jmaTravelTimeTablePromise;
 }
 
 /* ─────────────────────────────────────────────────────
@@ -16851,6 +16894,18 @@ export default function App() {
     loadStations()
       .then(list => { if (!cancelled) setStations(list); })
       .catch(err => console.error("観測点マスタの取得に失敗:", err));
+    return () => { cancelled = true; };
+  }, []);
+
+  // JMA2001走時表(震源推定、実験的機能)も起動時に一度だけ取得する。
+  // ファイルが無い(scripts/build-jma-travel-time.mjsを実行していない)場合は
+  // 404になるが、epicenterEstimation.ts側が自動的に従来の定速モデルに
+  // フォールバックするため、エラーはログに出すだけで動作は継続する。
+  useEffect(() => {
+    let cancelled = false;
+    loadJmaTravelTimeTable()
+      .then(json => { if (!cancelled) setJmaTravelTimeTable(tableFromJSON(json)); })
+      .catch(err => console.warn("JMA2001走時表を取得できませんでした(定速モデルにフォールバックします):", err));
     return () => { cancelled = true; };
   }, []);
 
