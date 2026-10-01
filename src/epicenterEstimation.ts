@@ -257,6 +257,8 @@ const EXTENDED_GRID_SEARCH_RADIUS_DEG = 3.5;
 // AMPLITUDE_PENALTY_WEIGHTのような特別な倍率は基本的に不要(1.0を基準に
 // 調整用として残してある)。
 const SP_TIME_PENALTY_WEIGHT = 1.0;
+// S-P時間差の観測点ごとの残差(秒)の上限。computeSpTimePenaltyのコメント参照。
+const SP_TIME_RESIDUAL_CAP_SEC = 3;
 // S-P時間差ペナルティの最低点数(点数が少なすぎると、たまたまの観測点
 // ごとのブレに引っ張られやすいため)。
 const MIN_POINTS_FOR_SP_TIME_CHECK = 3;
@@ -823,44 +825,13 @@ function destinationPoint(lat, lon, bearingDegVal, distDeg) {
  * estimateEpicenter内でグリッド中心を基準に1回だけ計算)を受け取るように
  * 変更した。
  */
-// 【対策: 検知点が少ない間の沖合への発散(レンジの不定性)】観測点が片側にしか
-// ない(海岸沿いの観測網+沖合の震源)状況では、到達時刻の分散だけでは震源までの
-// 距離(レンジ方向)がほとんど拘束されず、検知時刻のノイズに引きずられて解が
-// 沖へ大きくずれる傾向がある(合成テストで、検知6点のとき海岸から約30km沖の
-// 地震が平均で更に20〜35km沖に推定された)。S-netを着未着法から外す修正の
-// 前は、「S-netが未検知」という(実際には検知処理の対象外なだけの)偽の情報が
-// たまたまこの発散を抑えていたが、正しい情報ではないため取り除いた。代わりに、
-// 最初に検知した観測点(=通常は震源に最も近い観測点)から一定距離
-// (RANGE_PRIOR_FREE_KM)を超えて離れた候補に、超過分の走時相当の二乗に
-// 比例するペナルティ(到達時刻分散と同じms²単位)を加える。検知点が増えるほど
-// 観測データ自体が距離を拘束できるので、RANGE_PRIOR_FADE_START_POINTSから
-// RANGE_PRIOR_FADE_END_POINTSにかけて線形に0まで弱め、十分な点数では
-// 一切影響しないようにしている。
-const RANGE_PRIOR_FREE_KM = 60;
-const RANGE_PRIOR_WEIGHT = 0.02;
-const RANGE_PRIOR_FADE_START_POINTS = 6;
-const RANGE_PRIOR_FADE_END_POINTS = 16;
-
-function rangePriorPenalty(firstDistKm, pointCount) {
-  const fade = Math.max(0, Math.min(1,
-    (RANGE_PRIOR_FADE_END_POINTS - pointCount) / (RANGE_PRIOR_FADE_END_POINTS - RANGE_PRIOR_FADE_START_POINTS)));
-  if (fade <= 0) return 0;
-  const excessKm = firstDistKm - RANGE_PRIOR_FREE_KM;
-  if (excessKm <= 0) return 0;
-  const excessMs = (excessKm / P_WAVE_SPEED_KM_S) * 1000;
-  return RANGE_PRIOR_WEIGHT * fade * excessMs * excessMs;
-}
-
 function computeCoarseErrorLevel(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier = 1, spTimePenaltyMultiplier = 1) {
   const meanOriginTime = computeWeightedOriginTime(candidate, detections, detectionWeightById);
   if (meanOriginTime == null) return Infinity;
 
   let errorLevel = 0;
-  let firstDetectedAt = Infinity;
-  let firstDistKm = 0;
   for (const d of detections) {
     const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
-    if (d.detectedAt < firstDetectedAt) { firstDetectedAt = d.detectedAt; firstDistKm = distKm; }
     const tt = travelTimeMs(distKm, candidate.depthKm);
     const originTime = d.detectedAt - tt;
     const weight = detectionWeightById.get(d.id) ?? 0;
@@ -877,7 +848,6 @@ function computeCoarseErrorLevel(candidate, detections, detectionWeightById, amp
     // あたる。coarse・fine両方の段階から常時有効にしている。
     if (diff < 0) errorLevel += weight * diff * diff;
   }
-  errorLevel += rangePriorPenalty(firstDistKm, detections.length);
   errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier);
   // 【対策: 深さの推定誤差がとても大きい問題】S-P時間差ペナルティも、
   // 震度較正ペナルティと同じ理由(粗い探索の段階で既に深さ候補の絞り込みに
@@ -916,7 +886,17 @@ function computeSpTimePenalty(candidate, detections, detectionWeightById, penalt
     if (expectedSpSec == null) {
       expectedSpSec = distHypoKm * (1 / S_WAVE_SPEED_KM_S - 1 / P_WAVE_SPEED_KM_S);
     }
-    const diffMs = (observedSpSec - expectedSpSec) * 1000;
+    // 【実データ(2026-08-28青森県東方沖M4.6・08-30千葉県東方沖M4.8のリプレイ)
+    // で判明した不具合への対策】観測点ごとの残差に上限(SP_TIME_RESIDUAL_CAP_SEC)
+    // を設ける。S波到達の検知は震度の立ち上がりに依存する簡易的なもので、P波の
+    // 余韻の成長などを取り違えることがある。shakeDetection.ts側の修正(P波の初動
+    // から最低S_ARRIVAL_MIN_DELAY_MS後の急上昇だけをS波到達とみなす)後も、
+    // 外れ値1点が誤差関数全体を支配しないようにする。この上限が無いと、青森の
+    // リプレイで検知53点でも推定が54km陸側のままだった。
+    let diffMs = (observedSpSec - expectedSpSec) * 1000;
+    const capMs = SP_TIME_RESIDUAL_CAP_SEC * 1000;
+    if (diffMs > capMs) diffMs = capMs;
+    if (diffMs < -capMs) diffMs = -capMs;
     const weight = detectionWeightById.get(d.id) ?? 0;
     penalty += weight * diffMs * diffMs;
     count++;
@@ -942,11 +922,8 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   if (meanOriginTime == null) return Infinity;
 
   let errorLevel = 0;
-  let firstDetectedAt = Infinity;
-  let firstDistKm = 0;
   for (const d of detections) {
     const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
-    if (d.detectedAt < firstDetectedAt) { firstDetectedAt = d.detectedAt; firstDistKm = distKm; }
     const tt = travelTimeMs(distKm, candidate.depthKm);
     const originTime = d.detectedAt - tt;
     const weight = detectionWeightById.get(d.id) ?? 0;
@@ -961,7 +938,6 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   // 分散だけでは区別しにくい候補同士(特に、観測点が一方向に偏っていて
   // 絶対距離が決まりにくい沖合の地震)を、震度パターンの物理的な説明の
   // 良さで追加的に絞り込む(詳細はcomputeAmplitudeCalibrationPenalty参照)。
-  errorLevel += rangePriorPenalty(firstDistKm, detections.length);
   errorLevel += computeAmplitudeCalibrationPenalty(candidate, detections, detectionWeightById, amplitudePenaltyMultiplier);
 
   // 【対策: 深さの推定誤差がとても大きい問題】S-P時間差による深さの
@@ -992,37 +968,6 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   }
 
   return errorLevel;
-}
-
-// 【陸寄りへの引き寄せ対策】海底観測点(id 5000以上、S-net等)は、情報の更新
-// 間隔が1分と長いため、shakeDetection.tsの検知対象から除外している
-// (isOceanBottomStationId参照)。ところが震源推定側のallStations(観測点
-// マスタ全体)にはS-netが含まれたままだったため、
-//  (1) 着未着法: S-netは構造的に「検知済み」にならないので常に未検知扱いと
-//      なり、「もうP波が届いているはずなのに未検知」という違反ペナルティが
-//      沖合の候補(S-netに近い候補)ほど大きく加算され、推定が陸側へ押し
-//      戻されていた。
-//  (2) テリトリー判定: S-net込みの凸包で外部点/内部点を分類していたため、
-//      最初に検知した陸上観測点が「内部点」と判定され、海側への探索範囲
-//      拡張(A)・S-P/震度較正ペナルティの強化(B・23節)が海域の地震で
-//      発動しなかった。
-// いずれも検知エンジンと同じ基準で海底観測点を除外した観測点マスタを使う
-// ことで解消する。stationTerritory.tsのgetStationTerritories()は配列の
-// 参照が同じかどうかで結果をキャッシュしているため、除外後の配列は元の
-// 配列ごとにWeakMapで使い回し、毎回新しい配列を作ってキャッシュを無効化
-// しないようにしている。
-function isOceanBottomStationId(id) {
-  const idNum = Number(id);
-  return Number.isFinite(idNum) && idNum >= 5000;
-}
-const landStationsCache = new WeakMap();
-function getLandStations(allStations) {
-  let land = landStationsCache.get(allStations);
-  if (!land) {
-    land = allStations.filter(s => !isOceanBottomStationId(s.id));
-    landStationsCache.set(allStations, land);
-  }
-  return land;
 }
 
 /**
@@ -1086,10 +1031,9 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
   // 無いだけの内陸イベントまで過剰に反応するのを防ぐ)で、この判定は
   // 「観測点マスタ全体における構造的な位置」という、今回の検知パターンに
   // 左右されない安定した基準にしている。
-  const landStations = allStations ? getLandStations(allStations) : null;
   let outwardBearingDeg = null;
-  if (landStations) {
-    const territories = getStationTerritories(landStations);
+  if (allStations) {
+    const territories = getStationTerritories(allStations);
     const anchorTerritory = territories.get(first.id);
     if (anchorTerritory && anchorTerritory.type !== "interior") {
       outwardBearingDeg = anchorTerritory.outwardBearingDeg;
@@ -1118,10 +1062,10 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
   }
   const estimationDetections = selectNearestDetections(detections, detectionSelectionAnchors, first);
   let nearbyUndetectedStations = null;
-  if (landStations) {
+  if (allStations) {
     const extraRadiusKm = (effectiveSearchRadiusDeg - GRID_SEARCH_RADIUS_DEG) * 111; // 緯度1度≒111km換算
     const detectedIdsFull = new Set(detections.map(d => d.id));
-    nearbyUndetectedStations = landStations.filter(s =>
+    nearbyUndetectedStations = allStations.filter(s =>
       !detectedIdsFull.has(s.id) &&
       haversineKm(gridCenterLat, gridCenterLon, s.lat, s.lon) <= UNDETECTED_STATION_PREFILTER_RADIUS_KM + extraRadiusKm
     );
