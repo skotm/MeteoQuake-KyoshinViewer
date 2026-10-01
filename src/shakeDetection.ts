@@ -1083,6 +1083,9 @@ function isOceanBottomStationId(id) {
  * 揺れ検知エンジン本体。観測点マスタが揃ったら initialize() を一度呼び、
  * 以降はデータ更新のたびに processTick() を呼ぶ。
  */
+// P波の初動からS波到達とみなせるまでの最短時間(ms)。上記sharpRiseのコメント参照。
+const S_ARRIVAL_MIN_DELAY_MS = 2000;
+
 export class ShakeDetectionEngine {
   constructor(params = {}) {
     this.params = { ...DEFAULT_SHAKE_DETECTION_PARAMS, ...params };
@@ -1295,7 +1298,18 @@ export class ShakeDetectionEngine {
       // (P波相当)との差=S-P時間差を、震源距離(≒深さ)の直接的な手がかりと
       // して使う。
       if (point.reactionStartAt != null && point.sWaveArrivalAt == null) {
+        // 【実データ(2026-08-28青森県東方沖M4.6・08-30千葉県東方沖M4.8の
+        // リプレイ)で判明した不具合の修正】以前は、P波の立ち上がり(reactionStartAt)
+        // と同じtickで「急上昇」の基準を満たすと、そのtickがS波到達として記録
+        // されていた。観測点の震度は地震がない間-3付近で張り付いているため、
+        // P波の初動(-3→0台への跳ね上がり)自体が「急上昇」に該当し、ほとんどの
+        // 観測点でS-P時間差が0秒(理論値は数秒〜十数秒)になっていた。これが
+        // 震源推定のS-P時間差ペナルティ(computeSpTimePenalty)を通じて、
+        // 「震源が観測点の直下にある」という誤った制約として働き、推定が陸側・
+        // 深さ0へ引き寄せられていた。P波の初動から最低
+        // S_ARRIVAL_MIN_DELAY_MS経ってからの急上昇だけをS波到達とみなす。
         const sharpRise = value != null
+          && (now - point.reactionStartAt) >= S_ARRIVAL_MIN_DELAY_MS
           && point.intensityDiff >= params.riseThreshold
           && (point.avgDiff == null || point.avgDiff >= params.avgRiseThreshold);
         if (sharpRise) point.sWaveArrivalAt = now;
