@@ -17,7 +17,7 @@ import { setJmaTravelTimeTable, tableFromJSON } from "./jmaTravelTime";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.7.0";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
