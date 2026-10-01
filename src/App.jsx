@@ -6,6 +6,7 @@ import { intensityToShindoColor, MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTE
 import { ShakeDetectionEngine } from "./shakeDetection";
 import { prepareShakeTest, computeShakeTestValues, isShakeTestFinished, P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "./shakeTestSimulation";
 import { EpicenterEstimator } from "./epicenterEstimation";
+import { pickEewsToFocus } from "./eewCameraFocus";
 import { setJmaTravelTimeTable, tableFromJSON } from "./jmaTravelTime";
 
 /* ─────────────────────────────────────────────────────
@@ -17,7 +18,7 @@ import { setJmaTravelTimeTable, tableFromJSON } from "./jmaTravelTime";
    - MAJORには繰り上げ先が無いので、10になってもそのまま11、12…と増え続ける
    (要するに10進の桁上がりと同じルールで、MAJORだけ上限が無い)
    ───────────────────────────────────────────────────── */
-const APP_VERSION = "0.7.0";
+const APP_VERSION = "0.6.0";
 
 /* ─────────────────────────────────────────────────────
    TERMS / PRIVACY / NOTICES CONSENT
@@ -1329,6 +1330,8 @@ function MapCanvas({
   // 再生速度に同期させるために使う(詳細は該当useEffectのコメント参照)。
   replayActive = false,
   replaySpeed = 1,
+  replayDataTimeMs = null,
+  replayPlaying = false,
   shakeDetectionEnabled = true,
   onShakeEventsChange,
   // 震源推定(epicenterEstimation.ts、実験的機能)。デフォルトOFF。
@@ -2524,6 +2527,33 @@ function MapCanvas({
     : (shakeTestTrueEpicenters.length > 0 ? "test" : "live");
   const prevRealtimeSourceModeRef = useRef(realtimeSourceMode);
   const SOURCE_CHANGE_DETECTION_SUPPRESS_MS = 2000;
+  // 【リプレイの速度依存バグ対策】検知エンジン・震源推定へ渡す時刻(エンジン時刻)。
+  // 以前は常にDate.now()(壁時計)を渡していたが、リプレイは既定で4倍速のため、
+  // 観測点ごとの検知時刻の差が実際の1/4に圧縮され、見かけのP波速度が4倍
+  // (約27km/s)になっていた。その結果、震源推定の深さが上限の150kmに張り付き、
+  // 位置も陸側へ引き寄せられていた(2026-08-28青森県東方沖・08-30千葉県東方沖の
+  // リプレイで再現)。リプレイ中はデータ上の時刻(フレームのdataTime)をエンジン
+  // 時刻とし、再生速度に依存しないようにする。リアルタイム・検知テストは従来
+  // どおりDate.now()。
+  const lastEngineNowRef = useRef(null);
+  // 検知エンジン(processTick)を最後に実際に進めた時に渡した震度値のMap。
+  // 新しいデータが届くたびに新しいMapが作られる(リアルタイム・リプレイ・テスト共通)
+  // ので、同じMapのままeffectが再実行されたかどうかの判定に使う。
+  const lastProcessedValuesRef = useRef(null);
+  // リプレイ中にシーク/巻き戻し/大きく先へ飛んだとき(データ時刻が不連続に
+  // なったとき)、検知状態を引き継がないためのしきい値(ms)。通常再生では
+  // 1tickあたり1〜数フレーム(=数秒)しか進まない。
+  const REPLAY_TIME_JUMP_RESET_MS = 5000;
+  // P波・S波到達円のアニメーションを、エンジン時刻と同じ時間軸(データ時刻)で
+  // 進めるための基準(最後にデータ時刻が更新された時点の、データ時刻と壁時計)。
+  const replayClockRef = useRef({ dataMs: null, wallMs: 0 });
+  if (replayActive && replayDataTimeMs != null) {
+    if (replayClockRef.current.dataMs !== replayDataTimeMs) {
+      replayClockRef.current = { dataMs: replayDataTimeMs, wallMs: Date.now() };
+    }
+  } else if (replayClockRef.current.dataMs !== null) {
+    replayClockRef.current = { dataMs: null, wallMs: 0 };
+  }
 
   // リアルタイムタブのデータをGeoJSONに変換して地図へ反映する。
   // 呼び出し元(App)のuseRealtimeStreamが内部で最大2Hz(500ms間隔)に間引いて
@@ -2630,17 +2660,49 @@ function MapCanvas({
     // 場合、それまでの検知(観測点の履歴・進行中のイベント・震源推定の
     // キャッシュ)を破棄し、切り替え直後2秒間は検知を無効化する。
     // 検知の有効/無効の設定に関わらず、切り替えは必ず記録する。
-    if (prevRealtimeSourceModeRef.current !== realtimeSourceMode) {
+    const engineNow = (replayActive && replayDataTimeMs != null) ? replayDataTimeMs : Date.now();
+    const prevEngineNow = lastEngineNowRef.current;
+    lastEngineNowRef.current = engineNow;
+    const sourceModeChanged = prevRealtimeSourceModeRef.current !== realtimeSourceMode;
+    let replayTimeJumped = false;
+    if (sourceModeChanged) {
       prevRealtimeSourceModeRef.current = realtimeSourceMode;
-      shakeEngineRef.current.resetForSourceChange(Date.now(), SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+      shakeEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
       epicenterEstimatorRef.current.reset();
       lastEpicenterEstimatesRef.current = new Map();
+    } else if (replayActive && replayDataTimeMs != null && prevEngineNow != null) {
+      // リプレイのシーク・巻き戻し・再生し直し(データ時刻が戻る、または5秒超
+      // 飛ぶ)では、それまでの検知を持ち越さずリセットする。
+      const jumpMs = engineNow - prevEngineNow;
+      if (jumpMs < 0 || jumpMs > REPLAY_TIME_JUMP_RESET_MS) {
+        replayTimeJumped = true;
+        shakeEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+        epicenterEstimatorRef.current.reset();
+        lastEpicenterEstimatesRef.current = new Map();
+      }
     }
+    // 【震度しきい値などの操作で検知が乱れる問題の対策】このeffectは、新しい
+    // データが届いた時だけでなく、震度しきい値バー・上昇中表示・リプレイ色分け・
+    // 検知/震源推定のON/OFFなどの操作でも再実行される(依存配列に含まれる
+    // ため)。検知エンジンのprocessTickは「1回の呼び出し=1tick(≒1秒)」前提で、
+    // 直近5tickの履歴・直近10tickの上昇速度・誤検知の取り消し判定(6tick)・
+    // イベント解放(10tick)などをtick数で数えている。しきい値バーをドラッグ
+    // するだけで同じ値のままprocessTickが毎秒数十回呼ばれ、履歴が同じ値で
+    // 埋まって基準値が壊れたり、イベントが分裂・取り消しされたり、検知自体が
+    // 欠落したりすることをシミュレーションで確認した(青森・千葉のリプレイで
+    // 初動付近の操作により検知が欠落/イベントが7個に分裂)。そこで、前回
+    // processTickに渡したものと同じMapのままの再実行では検知エンジンを進めず、
+    // 前回の結果をそのまま使う。切り替え・シークによるリセット直後は必ず進める。
+    const valuesUnchanged = !sourceModeChanged && !replayTimeJumped
+      && lastProcessedValuesRef.current === realtimeValues;
+    if (sourceModeChanged || replayTimeJumped) lastProcessedValuesRef.current = null;
 
     // 揺れ検知エンジンを1tick分進める(設定でOFFの間は呼ばない)。
     // 近傍点リストが未構築(観測点マスタ未取得)の間は空配列が返る。
     const shakeEvents = shakeDetectionEnabled
-      ? shakeEngineRef.current.processTick(realtimeValues, Date.now())
+      ? (valuesUnchanged
+        ? lastShakeEventsRef.current
+        : (lastProcessedValuesRef.current = realtimeValues, shakeEngineRef.current.processTick(realtimeValues, engineNow)))
       : [];
     lastShakeEventsRef.current = shakeEvents;
     const shakeSource = map.getSource("shake-events");
@@ -2659,7 +2721,7 @@ function MapCanvas({
     // 単純に毎tick呼んでよい。
     if (epicenterEstimationEnabled) {
       const estimates = shakeEvents.length > 0
-        ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, Date.now())
+        ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, engineNow)
         : new Map();
       lastEpicenterEstimatesRef.current = estimates;
       // 【対策C: 検知が分散してしまう問題】epicenterEstimation.tsのより
@@ -2698,7 +2760,7 @@ function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -2785,8 +2847,15 @@ function MapCanvas({
         const estimates = lastEpicenterEstimatesRef.current;
         const pFeatures = [];
         const sFeatures = [];
-        const now = Date.now();
-        const speedMultiplier = replayActive ? replaySpeed : 1;
+        // リプレイ中は、originTimeがデータ時刻の時間軸(エンジン時刻)なので、円の
+        // 経過時間もデータ時刻で数える。最後にデータ時刻が更新されてからの壁時計の
+        // 経過分に再生速度を掛けて補間することで、tick間も滑らかに成長させる。
+        const replayClock = replayClockRef.current;
+        // 一時停止中は補間せず、停止した時点のデータ時刻で円を止める。
+        const now = (replayActive && replayClock.dataMs != null)
+          ? replayClock.dataMs + (replayPlaying ? (Date.now() - replayClock.wallMs) * replaySpeed : 0)
+          : Date.now();
+        const speedMultiplier = 1;
 
         if (estimates && estimates.size > 0) {
           for (const result of estimates.values()) {
@@ -2811,7 +2880,54 @@ function MapCanvas({
     frameId = requestAnimationFrame(tick);
 
     return () => { if (frameId != null) cancelAnimationFrame(frameId); };
-  }, [status, replayActive, replaySpeed]);
+  }, [status, replayActive, replaySpeed, replayPlaying]);
+
+  // 緊急地震速報の第一報(または、アプリを開いた時点で既に発表済みだったEEW)が
+  // 来たら、地図の視点を震源へ移動する。続報(同じeventIdの報番号違い)・取消報では
+  // 動かさない。判定は eewCameraFocus.ts の pickEewsToFocus を参照。
+  // ズームは「程よく」、現在のズームを EEW_FOCUS_MIN_ZOOM〜EEW_FOCUS_MAX_ZOOM に
+  // 収める(ズーム6でおよそ幅380km=震源の周辺数県が見える広さ。近づけすぎない)。
+  // 地図の準備ができていない間は何もせず、準備ができた時点で改めて判定する。
+  const focusedEewEventIdsRef = useRef(new Set());
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return;
+    const fresh = pickEewsToFocus(eews, focusedEewEventIdsRef.current);
+    if (fresh.length === 0) return;
+
+    const EEW_FOCUS_MIN_ZOOM = 5.5;
+    const EEW_FOCUS_MAX_ZOOM = 6.5;
+    const reducedMotion = typeof window !== "undefined"
+      && window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const duration = reducedMotion ? 0 : 1000;
+
+    if (fresh.length === 1) {
+      const zoom = Math.min(EEW_FOCUS_MAX_ZOOM, Math.max(EEW_FOCUS_MIN_ZOOM, map.getZoom()));
+      map.easeTo({
+        center: [fresh[0].longitude, fresh[0].latitude],
+        zoom,
+        duration,
+        // 横画面ではフローティングパネルが画面左側(約360px)を覆っているので、
+        // 見た目の中心が隠れない範囲の中央に来るようずらす(震源選択時と同じ)。
+        offset: isWide ? [230, 0] : [0, 0],
+      });
+    } else {
+      // 同時に複数の新規EEWが届いた/既に発表済みだった場合は、全部が収まるようにする。
+      let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+      fresh.forEach(e => {
+        minLon = Math.min(minLon, e.longitude); maxLon = Math.max(maxLon, e.longitude);
+        minLat = Math.min(minLat, e.latitude); maxLat = Math.max(maxLat, e.latitude);
+      });
+      map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
+        padding: isWide
+          ? { top: 40, bottom: 40, left: 460, right: 40 }
+          : { top: 80, bottom: 220, left: 40, right: 40 },
+        maxZoom: EEW_FOCUS_MAX_ZOOM,
+        duration,
+      });
+    }
+  }, [eews, status, isWide]);
 
   // 緊急地震速報: areas[]に予測震度がある場合、その地域を細分区域.json上で
   // 名前が一致するポリゴンを探し、震度の色で塗りつぶす。P/S波の円と違って
@@ -15225,8 +15341,6 @@ function SettingsBody({
                     <option value={1}>1倍速</option>
                     <option value={2}>2倍速</option>
                     <option value={4}>4倍速</option>
-                    <option value={8}>8倍速</option>
-                    <option value={16}>16倍速</option>
                   </select>
                 </div>
               </div>
@@ -17880,6 +17994,8 @@ export default function App() {
           replayJmaColorEnabled={replayPlayer.loaded && replayJmaColorEnabled}
           replayActive={replayPlayer.loaded}
           replaySpeed={replayPlayer.speed}
+          replayPlaying={replayPlayer.isPlaying}
+          replayDataTimeMs={replayPlayer.loaded ? (replayPlayer.frames[replayPlayer.currentIndex]?.dataTime?.getTime() ?? null) : null}
           shakeDetectionEnabled={shakeDetectionEnabled}
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
