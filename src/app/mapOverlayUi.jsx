@@ -1,8 +1,10 @@
-import { useContext, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTENSITY, intensityToShindoColor } from "../shindoColorScale";
 import { ThemeContext } from "./theme";
 import { QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, getIntensityStyleFromScheme } from "./colorSchemes";
 import { Glass, PressableButton } from "./glass";
+import { findSingleEpicenterName } from "./geo";
+import { loadEpicenterNamesData } from "./mapDataLoaders";
 import { TSUNAMI_GRADE_INFO, tsunamiGradeInfo, tsunamiHeightBandGrade } from "./tsunamiData";
 
 
@@ -327,24 +329,55 @@ export function StationMarkerToggleButton({ visible, onClick }) {
    ───────────────────────────────────────────────────── */
 /* ─────────────────────────────────────────────────────
    SHAKE EVENT CARD — 揺れ検知エンジン(shakeDetection.ts)が検出したイベントを
-   リアルタイムタブのフローティングに表示するための簡易カード。
+   リアルタイムタブのフローティングに表示するカード。
+   表示は「(震央地名)で(揺れの程度)を検出」+「観測点数 N」。見出しの作りは
+   緊急地震速報カード(EewDetailFloatingCard)と揃え、左に色付きのGlass(揺れの
+   程度で色分け)、右に観測点数のGlassを並べる。
+   震央地名は、検知した観測点が属する震央地名(ep.json)がただ1つの時だけ出す。
+   複数にまたがる時は代表を選ぶと誤解を招くので、地名を省いて「揺れを検出」だけにする。
    ───────────────────────────────────────────────────── */
-const SHAKE_LEVEL_LABELS = ["小さな揺れを検知", "揺れを検知", "やや強い揺れを検知", "強い揺れを検知", "非常に強い揺れを検知"];
+const SHAKE_LEVEL_NOUNS = ["小さな揺れ", "揺れ", "やや強い揺れ", "強い揺れ", "非常に強い揺れ"];
+// 揺れの程度(level 0〜4)ごとのアクセント色。緊急地震速報の警報(赤)・予報(橙)と
+// 同系統の色を、弱い揺れ=黄 → 強い揺れ=赤の3段階で使う。
+const SHAKE_LEVEL_ACCENTS = ["#FFC107", "#FFC107", "#FF9F0A", "#FF453A", "#FF453A"];
+
+// 震央地名データ(ep.json、約670KB)は、揺れ検知カードが最初に出る時に1回だけ
+// 読み込み、以後は使い回す。観測点IDごとの判定結果もキャッシュする。
+let shakePlaceGeoCache = null;
+const shakePlaceNameCache = new Map();
+function useShakeEventPlaceName(detections) {
+  const [geo, setGeo] = useState(shakePlaceGeoCache);
+  useEffect(() => {
+    if (geo) return undefined;
+    let alive = true;
+    loadEpicenterNamesData()
+      .then((loaded) => { shakePlaceGeoCache = loaded; if (alive) setGeo(loaded); })
+      .catch((err) => console.error("震央地名データの読み込みに失敗しました:", err));
+    return () => { alive = false; };
+  }, [geo]);
+  return useMemo(() => findSingleEpicenterName(geo, detections, shakePlaceNameCache), [geo, detections]);
+}
 
 export function ShakeEventCard({ event }) {
   const { tokens } = useContext(ThemeContext);
-  const label = SHAKE_LEVEL_LABELS[event.level] || SHAKE_LEVEL_LABELS[0];
+  const place = useShakeEventPlaceName(event.detections);
+  const level = Math.min(Math.max(Number.isFinite(event.level) ? event.level : 0, 0), SHAKE_LEVEL_NOUNS.length - 1);
+  const text = `${place ? `${place}で` : ""}${SHAKE_LEVEL_NOUNS[level]}を検出`;
+  // Glassの中身は「コンテンツ層」のブロックdivに包まれるため、縦位置を確実に
+  // 中央へ揃えるには、自前でheight:100%のflexラッパーを挟む必要がある
+  // (ShakeTestRunningBadgeのコメント参照)。
+  const inner = { display: "flex", alignItems: "center", height: "100%", padding: "9px 14px" };
   return (
-    <div style={{ margin: "8px 6px" }}>
-      <Glass radius={14} tintColor="#FFC107">
-        <div style={{ position: "relative", zIndex: 1, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 8, height: 8, borderRadius: 4, background: "#FFC107", flexShrink: 0 }}/>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: tokens.text }}>{label}</div>
-            <div style={{ fontSize: 11, color: `rgba(${tokens.ink},0.6)`, marginTop: 1 }}>
-              観測点 {event.pointCount}件
-            </div>
-          </div>
+    <div style={{ display: "flex", alignItems: "stretch", gap: 8, margin: "6px 16px 8px" }}>
+      <Glass radius={14} tintColor={SHAKE_LEVEL_ACCENTS[level]} style={{ flex: 1, minWidth: 0 }}>
+        <div style={inner}>
+          <span style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.3, color: tokens.text }}>{text}</span>
+        </div>
+      </Glass>
+      <Glass radius={14} style={{ flexShrink: 0 }}>
+        <div style={{ ...inner, gap: 6, whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: tokens.textSecondary }}>観測点数</span>
+          <span style={{ fontSize: 15, fontWeight: 800, color: tokens.text, fontVariantNumeric: "tabular-nums" }}>{event.pointCount}</span>
         </div>
       </Glass>
     </div>
