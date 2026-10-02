@@ -177,6 +177,28 @@ export function findEpicenterNameByPoint(epicenterNamesGeoJSON, lat, lon) {
   return null;
 }
 
+// 揺れ検知イベントの観測点群(points: {id, lat, lon}[])が属する震央地名(ep.json)が
+// ただ1つだけの場合にその名前を返す。2つ以上の震央地名にまたがる場合は、どれか1つを
+// 代表として選ぶと誤解を招くのでnullを返す(区域に含まれず判定できない観測点は
+// 無視する。全てが判定できない場合もnull)。
+// cache(観測点ID→震央地名|null)を渡すと、同じ観測点のポリゴン走査を繰り返さない
+// (ep.jsonは変わらないので、観測点IDごとの結果は使い回せる)。
+export function findSingleEpicenterName(epicenterNamesGeoJSON, points, cache = new Map()) {
+  if (!epicenterNamesGeoJSON || !Array.isArray(points) || points.length === 0) return null;
+  let single = null;
+  for (const p of points) {
+    let name = cache.get(p.id);
+    if (name === undefined) {
+      name = findEpicenterNameByPoint(epicenterNamesGeoJSON, p.lat, p.lon);
+      cache.set(p.id, name);
+    }
+    if (!name) continue;
+    if (single === null) single = name;
+    else if (single !== name) return null;
+  }
+  return single;
+}
+
 // 観測点マスタ(stations)から、eqdbの観測点名(name)に対応する地点を探し、
 // 区域コード(area.code)を補完する。
 // eqdbは観測点の緯度経度(lat/lon)を直接返してくるため、まずareasGeoJSON(細分区域の
