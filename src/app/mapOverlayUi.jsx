@@ -3,8 +3,8 @@ import { MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTE
 import { ThemeContext } from "./theme";
 import { QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, getIntensityStyleFromScheme } from "./colorSchemes";
 import { Glass, PressableButton } from "./glass";
-import { findSingleEpicenterName } from "./geo";
-import { loadEpicenterNamesData } from "./mapDataLoaders";
+import { findSingleEpicenterPlace } from "./geo";
+import { loadEpicenterNamesData, loadGeoData } from "./mapDataLoaders";
 import { TSUNAMI_GRADE_INFO, tsunamiGradeInfo, tsunamiHeightBandGrade } from "./tsunamiData";
 
 
@@ -330,32 +330,39 @@ export function StationMarkerToggleButton({ visible, onClick }) {
 /* ─────────────────────────────────────────────────────
    SHAKE EVENT CARD — 揺れ検知エンジン(shakeDetection.ts)が検出したイベントを
    リアルタイムタブのフローティングに表示するカード。
-   表示は「(震央地名)で(揺れの程度)を検出」+「観測点数 N」。見出しの作りは
-   緊急地震速報カード(EewDetailFloatingCard)と揃え、左に色付きのGlass(揺れの
-   程度で色分け)、右に観測点数のGlassを並べる。
-   震央地名は、検知した観測点が属する震央地名(ep.json)がただ1つの時だけ出す。
-   複数にまたがる時は代表を選ぶと誤解を招くので、地名を省いて「揺れを検出」だけにする。
+   表示は「(場所)で(揺れの程度)を検出」+「観測点数 N」。1枚のGlassに、左へ場所+揺れの程度、右へ観測点数を並べる。色は枠だけに付け
+   (揺れの程度で黄→橙→赤)、面は色を付けない。面ごと色付きの緊急地震速報カード
+   (EewDetailFloatingCard)と並んだ時に紛らわしくならないようにするため。
+   場所は、検知した観測点が属する震央地名の区域(ep.json)がただ1つならその区域名、
+   複数にまたがる時は都道府県、それでも1つに絞れなければ地方名、と少しずつ広げる
+   (geo.jsのfindSingleEpicenterPlace)。地方でも1つに絞れない時は、代表を選ぶと
+   誤解を招くので地名を省いて「揺れを検出」だけにする。
    ───────────────────────────────────────────────────── */
 const SHAKE_LEVEL_NOUNS = ["小さな揺れ", "揺れ", "やや強い揺れ", "強い揺れ", "非常に強い揺れ"];
-// 揺れの程度(level 0〜4)ごとのアクセント色。緊急地震速報の警報(赤)・予報(橙)と
-// 同系統の色を、弱い揺れ=黄 → 強い揺れ=赤の3段階で使う。
+// 揺れの程度(level 0〜4)ごとの枠の色。弱い揺れ=黄 → 強い揺れ=赤の3段階。
 const SHAKE_LEVEL_ACCENTS = ["#FFC107", "#FFC107", "#FF9F0A", "#FF453A", "#FF453A"];
 
-// 震央地名データ(ep.json、約670KB)は、揺れ検知カードが最初に出る時に1回だけ
-// 読み込み、以後は使い回す。観測点IDごとの判定結果もキャッシュする。
+// 場所の判定に使うデータ(震央地名 ep.json 約670KB と 都道府県 prefectures.json)を、
+// 揺れ検知カードが最初に出る時に1回だけ読み込み、以後は使い回す(prefectures.jsonは
+// 地図が既に読み込んでおり、loadGeoDataのPromiseを共有するので追加の通信はない)。
+// 観測点IDごとの判定結果もキャッシュする。
 let shakePlaceGeoCache = null;
-const shakePlaceNameCache = new Map();
+const shakePlaceInfoCache = new Map();
 function useShakeEventPlaceName(detections) {
   const [geo, setGeo] = useState(shakePlaceGeoCache);
   useEffect(() => {
     if (geo) return undefined;
     let alive = true;
-    loadEpicenterNamesData()
-      .then((loaded) => { shakePlaceGeoCache = loaded; if (alive) setGeo(loaded); })
-      .catch((err) => console.error("震央地名データの読み込みに失敗しました:", err));
+    Promise.all([
+      loadEpicenterNamesData().catch((err) => { console.error("震央地名データの読み込みに失敗しました:", err); return null; }),
+      loadGeoData().then((d) => d.prefectures).catch((err) => { console.error("都道府県データの読み込みに失敗しました:", err); return null; }),
+    ]).then(([epicenterNames, prefectures]) => {
+      shakePlaceGeoCache = { epicenterNames, prefectures };
+      if (alive) setGeo(shakePlaceGeoCache);
+    });
     return () => { alive = false; };
   }, [geo]);
-  return useMemo(() => findSingleEpicenterName(geo, detections, shakePlaceNameCache), [geo, detections]);
+  return useMemo(() => findSingleEpicenterPlace(geo, detections, shakePlaceInfoCache)?.name ?? null, [geo, detections]);
 }
 
 export function ShakeEventCard({ event }) {
@@ -363,24 +370,23 @@ export function ShakeEventCard({ event }) {
   const place = useShakeEventPlaceName(event.detections);
   const level = Math.min(Math.max(Number.isFinite(event.level) ? event.level : 0, 0), SHAKE_LEVEL_NOUNS.length - 1);
   const text = `${place ? `${place}で` : ""}${SHAKE_LEVEL_NOUNS[level]}を検出`;
-  // Glassの中身は「コンテンツ層」のブロックdivに包まれるため、縦位置を確実に
-  // 中央へ揃えるには、自前でheight:100%のflexラッパーを挟む必要がある
+  // 色は枠(border)だけに付ける。面は色を付けない通常のGlassにして、面ごと色付きの
+  // 緊急地震速報カードと見分けがつくようにする(以前は面にも色を付けていて紛らわしかった)。
+  // borderはGlassの外側のdivに付ける。Glassの内側のレイヤ(背景ぼかし・縁取り)は
+  // padding box内(inset:0)に収まるので、枠は隠れずに残る。
+  // Glassの中身は「コンテンツ層」のブロックdivに包まれるため、縦位置を確実に中央へ
+  // 揃えるには、自前でheight:100%のflexラッパーを挟む必要がある
   // (ShakeTestRunningBadgeのコメント参照)。
-  const inner = { display: "flex", alignItems: "center", height: "100%", padding: "9px 14px" };
   return (
-    <div style={{ display: "flex", alignItems: "stretch", gap: 8, margin: "6px 16px 8px" }}>
-      <Glass radius={14} tintColor={SHAKE_LEVEL_ACCENTS[level]} style={{ flex: 1, minWidth: 0 }}>
-        <div style={inner}>
-          <span style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.3, color: tokens.text }}>{text}</span>
-        </div>
-      </Glass>
-      <Glass radius={14} style={{ flexShrink: 0 }}>
-        <div style={{ ...inner, gap: 6, whiteSpace: "nowrap" }}>
+    <Glass radius={14} style={{ margin: "6px 16px 8px", border: `2px solid ${SHAKE_LEVEL_ACCENTS[level]}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, height: "100%", padding: "9px 14px" }}>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 800, lineHeight: 1.3, color: tokens.text }}>{text}</span>
+        <span style={{ flexShrink: 0, display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
           <span style={{ fontSize: 11, fontWeight: 600, color: tokens.textSecondary }}>観測点数</span>
           <span style={{ fontSize: 15, fontWeight: 800, color: tokens.text, fontVariantNumeric: "tabular-nums" }}>{event.pointCount}</span>
-        </div>
-      </Glass>
-    </div>
+        </span>
+      </div>
+    </Glass>
   );
 }
 

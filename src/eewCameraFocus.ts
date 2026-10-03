@@ -34,3 +34,38 @@ export function pickEewsToFocus<T extends EewForFocus>(eews: T[] | null | undefi
   }
   return picked;
 }
+
+// ── 揺れ検知(shakeDetection.ts)のイベント ──────────────────────────────
+// 揺れ検知カードが出る(= 確定した)イベントを初めて見た時に、そのイベントの
+// 検知位置(centerLat/centerLon)へ視点を移動するための判定。
+//  - 移動するのは、確定済み(confirmed)で、位置があり、このセッションで初めて見たイベントID。
+//    続報(同じイベントの観測点数増加)では動かさない。
+//  - 大きな地震では、同じ地震が複数のイベントに分かれて次々に確定することがある。直前の
+//    視点移動から SHAKE_FOCUS_COOLDOWN_MS 以内に確定したイベントは、動かさず「見た」
+//    ことにする(クールダウンが明けた後で遅れて動くのを防ぐ)。
+//  - 同時に複数が新規になった場合は、観測点数が最も多いイベントへ移動する。
+export const SHAKE_FOCUS_COOLDOWN_MS = 60000;
+
+export type ShakeEventForFocus = {
+  id: number;
+  confirmed?: boolean;
+  pointCount?: number;
+  centerLat?: number | null;
+  centerLon?: number | null;
+};
+
+export function pickShakeEventToFocus<T extends ShakeEventForFocus>(
+  events: T[] | null | undefined,
+  focusedIds: Set<number>,
+  nowMs: number,
+  lastFocusAtMs: number | null,
+): T | null {
+  let best: T | null = null;
+  for (const ev of events || []) {
+    if (!ev.confirmed || ev.centerLat == null || ev.centerLon == null || focusedIds.has(ev.id)) continue;
+    focusedIds.add(ev.id);
+    if (!best || (ev.pointCount ?? 0) > (best.pointCount ?? 0)) best = ev;
+  }
+  if (best && lastFocusAtMs != null && nowMs - lastFocusAtMs < SHAKE_FOCUS_COOLDOWN_MS) return null;
+  return best;
+}

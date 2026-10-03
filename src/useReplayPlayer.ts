@@ -52,6 +52,8 @@ export interface ReplayState {
 }
 
 const DEFAULT_SPEED = 4; // リプレイは早送りで見たいことが多いため、デフォルトを等倍より速くしておく
+// 再生速度として選べるのは1倍・2倍・4倍のみ(それ以外の値は既定の速度に丸める)。
+const ALLOWED_SPEEDS = [1, 2, 4];
 // tickの最短待ち時間(ms)。0にすると無駄にCPUを消費するタイマーの連発に
 // なるため、ごく小さい値にとどめる(以前は16msだったが、これが0.1秒刻み
 // ファイルの高倍速再生を頭打ちにしていたため4msに緩めた)。
@@ -157,7 +159,10 @@ export function useReplayPlayer(): ReplayPlayer {
 
   const play = useCallback(() => setState((prev) => ({ ...prev, isPlaying: true })), []);
   const pause = useCallback(() => setState((prev) => ({ ...prev, isPlaying: false })), []);
-  const setSpeed = useCallback((speed: number) => setState((prev) => ({ ...prev, speed })), []);
+  const setSpeed = useCallback((speed: number) => setState((prev) => ({
+    ...prev,
+    speed: ALLOWED_SPEEDS.includes(speed) ? speed : DEFAULT_SPEED,
+  })), []);
 
   const close = useCallback(() => {
     framesRef.current = [];

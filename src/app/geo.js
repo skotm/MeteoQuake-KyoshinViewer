@@ -177,26 +177,82 @@ export function findEpicenterNameByPoint(epicenterNamesGeoJSON, lat, lon) {
   return null;
 }
 
-// 揺れ検知イベントの観測点群(points: {id, lat, lon}[])が属する震央地名(ep.json)が
-// ただ1つだけの場合にその名前を返す。2つ以上の震央地名にまたがる場合は、どれか1つを
-// 代表として選ぶと誤解を招くのでnullを返す(区域に含まれず判定できない観測点は
-// 無視する。全てが判定できない場合もnull)。
-// cache(観測点ID→震央地名|null)を渡すと、同じ観測点のポリゴン走査を繰り返さない
-// (ep.jsonは変わらないので、観測点IDごとの結果は使い回せる)。
-export function findSingleEpicenterName(epicenterNamesGeoJSON, points, cache = new Map()) {
-  if (!epicenterNamesGeoJSON || !Array.isArray(points) || points.length === 0) return null;
-  let single = null;
-  for (const p of points) {
-    let name = cache.get(p.id);
-    if (name === undefined) {
-      name = findEpicenterNameByPoint(epicenterNamesGeoJSON, p.lat, p.lon);
-      cache.set(p.id, name);
-    }
-    if (!name) continue;
-    if (single === null) single = name;
-    else if (single !== name) return null;
+// 都道府県 → 地方(8地方区分+北海道・沖縄)。揺れ検知カードの場所表示で、
+// 震央地名の区域・都道府県で1つに絞れない時に、地方名まで広げるために使う。
+const REGION_OF_PREFECTURE = {
+  "北海道": "北海道地方",
+  "青森県": "東北地方", "岩手県": "東北地方", "宮城県": "東北地方", "秋田県": "東北地方", "山形県": "東北地方", "福島県": "東北地方",
+  "茨城県": "関東地方", "栃木県": "関東地方", "群馬県": "関東地方", "埼玉県": "関東地方", "千葉県": "関東地方", "東京都": "関東地方", "神奈川県": "関東地方",
+  "新潟県": "中部地方", "富山県": "中部地方", "石川県": "中部地方", "福井県": "中部地方", "山梨県": "中部地方", "長野県": "中部地方", "岐阜県": "中部地方", "静岡県": "中部地方", "愛知県": "中部地方",
+  "三重県": "近畿地方", "滋賀県": "近畿地方", "京都府": "近畿地方", "大阪府": "近畿地方", "兵庫県": "近畿地方", "奈良県": "近畿地方", "和歌山県": "近畿地方",
+  "鳥取県": "中国地方", "島根県": "中国地方", "岡山県": "中国地方", "広島県": "中国地方", "山口県": "中国地方",
+  "徳島県": "四国地方", "香川県": "四国地方", "愛媛県": "四国地方", "高知県": "四国地方",
+  "福岡県": "九州地方", "佐賀県": "九州地方", "長崎県": "九州地方", "熊本県": "九州地方", "大分県": "九州地方", "宮崎県": "九州地方", "鹿児島県": "九州地方",
+  "沖縄県": "沖縄地方",
+};
+
+// 点が、都道府県ポリゴン(prefectures.json、properties.name=都道府県名)のどれに含まれるかを返す。
+// どれにも含まれない(簡略化された海岸線の外にある観測点など)場合はnull。
+const prefectureBBoxCache = new WeakMap();
+function featureBBox(feature) {
+  let bb = prefectureBBoxCache.get(feature);
+  if (bb) return bb;
+  bb = [Infinity, Infinity, -Infinity, -Infinity]; // minLon, minLat, maxLon, maxLat
+  const visit = (c) => { if (typeof c[0] === "number") { if (c[0] < bb[0]) bb[0] = c[0]; if (c[1] < bb[1]) bb[1] = c[1]; if (c[0] > bb[2]) bb[2] = c[0]; if (c[1] > bb[3]) bb[3] = c[1]; } else c.forEach(visit); };
+  visit(feature.geometry?.coordinates || []);
+  prefectureBBoxCache.set(feature, bb);
+  return bb;
+}
+export function findPrefectureNameByPoint(prefecturesGeoJSON, lat, lon) {
+  if (!prefecturesGeoJSON || !Array.isArray(prefecturesGeoJSON.features) || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  for (const feature of prefecturesGeoJSON.features) {
+    const bb = featureBBox(feature);
+    if (lon < bb[0] || lon > bb[2] || lat < bb[1] || lat > bb[3]) continue;
+    if (isPointInPolygonGeometry(lat, lon, feature.geometry)) return feature.properties?.name ?? null;
   }
-  return single;
+  return null;
+}
+
+// 震央地名(ep.json)の区域名から、都道府県名を推定する(観測点が都道府県ポリゴンの外に
+// ある時の予備)。「岩手県沖」「千葉県北東部」のように都道府県名で始まるものと、
+// 北海道の「釧路地方北部」のような地方名で始まるものに対応する。海域名(三陸沖など)はnull。
+const HOKKAIDO_SUBPREFECTURE_RE = /^(石狩|渡島|檜山|後志|空知|上川|留萌|宗谷|網走|北見|紋別|胆振|日高|十勝|釧路|根室)地方/;
+const PREFECTURE_PREFIX_RE = /^(北海道|東京都|大阪府|京都府|[^\s都道府県]{2,3}県)/;
+function prefectureFromRegionName(regionName) {
+  if (!regionName) return null;
+  const m = PREFECTURE_PREFIX_RE.exec(regionName);
+  if (m && REGION_OF_PREFECTURE[m[1]]) return m[1];
+  if (HOKKAIDO_SUBPREFECTURE_RE.test(regionName)) return "北海道";
+  return null;
+}
+
+// 揺れ検知イベントの観測点群(points: {id, lat, lon}[])の場所を、震央地名の区域
+// → 都道府県 → 地方名の順に、少しずつ広げながら「ただ1つ」に絞れる最初の粒度で返す
+// ({ name, level: "region" | "prefecture" | "area" })。地方でも1つに絞れない場合や、
+// 判定できない場合はnull(どれか1つを代表に選ぶと誤解を招くため、地名は出さない)。
+// 各粒度で、その粒度の名前を判定できない観測点(区域外など)は無視する。
+// geo = { epicenterNames: ep.json, prefectures: prefectures.json }(どちらもnull可)。
+// cache(観測点ID→{region, prefecture, area})を渡すと、同じ観測点のポリゴン走査を
+// 繰り返さない(データは変わらないので、観測点IDごとの結果は使い回せる)。
+export function findSingleEpicenterPlace(geo, points, cache = new Map()) {
+  if (!geo || !Array.isArray(points) || points.length === 0) return null;
+  const infos = [];
+  for (const p of points) {
+    let info = cache.get(p.id);
+    if (!info) {
+      const region = geo.epicenterNames ? findEpicenterNameByPoint(geo.epicenterNames, p.lat, p.lon) : null;
+      const prefecture = findPrefectureNameByPoint(geo.prefectures, p.lat, p.lon) ?? prefectureFromRegionName(region);
+      info = { region, prefecture, area: prefecture ? (REGION_OF_PREFECTURE[prefecture] ?? null) : null };
+      cache.set(p.id, info);
+    }
+    infos.push(info);
+  }
+  for (const [level, key] of [["region", "region"], ["prefecture", "prefecture"], ["area", "area"]]) {
+    const names = new Set();
+    for (const info of infos) if (info[key]) names.add(info[key]);
+    if (names.size === 1) return { name: [...names][0], level };
+  }
+  return null;
 }
 
 // 観測点マスタ(stations)から、eqdbの観測点名(name)に対応する地点を探し、
