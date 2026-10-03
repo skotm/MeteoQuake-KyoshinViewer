@@ -3,7 +3,8 @@ import { useRef, useState, useContext, useEffect } from "react";
 import { ShakeDetectionEngine } from "../shakeDetection";
 import { EpicenterEstimator } from "../epicenterEstimation";
 import { P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "../shakeTestSimulation";
-import { pickEewsToFocus } from "../eewCameraFocus";
+import { pickEewsToFocus, pickShakeEventToFocus } from "../eewCameraFocus";
+import { focusMapOnPoints } from "./mapFocus";
 import { EMPTY_REALTIME_VALUES, QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, intensityValueToKey, replayJmaSubthresholdColor } from "./colorSchemes";
 import { ThemeContext } from "./theme";
 import { buildMapStyle, loadEpicenterNamesData, loadFaultsData, loadGeoData, loadMapLibre, loadPlateBoundariesData, loadTsunamiAreasData } from "./mapDataLoaders";
@@ -1259,6 +1260,9 @@ export function MapCanvas({
   // リプレイで再現)。リプレイ中はデータ上の時刻(フレームのdataTime)をエンジン
   // 時刻とし、再生速度に依存しないようにする。リアルタイム・検知テストは従来
   // どおりDate.now()。
+  // 揺れ検知イベントの視点移動用(既に視点移動の対象にしたイベントID / 最後に移動した壁時計時刻)。
+  const focusedShakeEventIdsRef = useRef(new Set());
+  const lastShakeFocusAtRef = useRef(null);
   const lastEngineNowRef = useRef(null);
   // 検知エンジン(processTick)を最後に実際に進めた時に渡した震度値のMap。
   // 新しいデータが届くたびに新しいMapが作られる(リアルタイム・リプレイ・テスト共通)
@@ -1428,6 +1432,18 @@ export function MapCanvas({
         ? lastShakeEventsRef.current
         : (lastProcessedValuesRef.current = realtimeValues, shakeEngineRef.current.processTick(realtimeValues, engineNow)))
       : [];
+
+    // 揺れ検知カードが出る(確定した)イベントを初めて見た時に、その検知位置へ視点を
+    // 移動する(緊急地震速報の第一報と同じ考え方。判定は eewCameraFocus.ts の
+    // pickShakeEventToFocus を参照)。大きな地震で同じ地震が複数のイベントに分かれて
+    // 次々に確定しても、直前の移動から一定時間は動かさない。
+    {
+      const focusEvent = pickShakeEventToFocus(shakeEvents, focusedShakeEventIdsRef.current, Date.now(), lastShakeFocusAtRef.current);
+      if (focusEvent) {
+        lastShakeFocusAtRef.current = Date.now();
+        focusMapOnPoints(map, [{ lat: focusEvent.centerLat, lon: focusEvent.centerLon }], isWide);
+      }
+    }
     lastShakeEventsRef.current = shakeEvents;
     const shakeSource = map.getSource("shake-events");
     if (shakeSource) {
@@ -1484,7 +1500,7 @@ export function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs, isWide]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -1609,8 +1625,7 @@ export function MapCanvas({
   // 緊急地震速報の第一報(または、アプリを開いた時点で既に発表済みだったEEW)が
   // 来たら、地図の視点を震源へ移動する。続報(同じeventIdの報番号違い)・取消報では
   // 動かさない。判定は eewCameraFocus.ts の pickEewsToFocus を参照。
-  // ズームは「程よく」、現在のズームを EEW_FOCUS_MIN_ZOOM〜EEW_FOCUS_MAX_ZOOM に
-  // 収める(ズーム6でおよそ幅380km=震源の周辺数県が見える広さ。近づけすぎない)。
+  // ズームは mapFocus.js の FOCUS_MIN_ZOOM〜FOCUS_MAX_ZOOM に収める。
   // 地図の準備ができていない間は何もせず、準備ができた時点で改めて判定する。
   const focusedEewEventIdsRef = useRef(new Set());
   useEffect(() => {
@@ -1619,38 +1634,7 @@ export function MapCanvas({
     const fresh = pickEewsToFocus(eews, focusedEewEventIdsRef.current);
     if (fresh.length === 0) return;
 
-    const EEW_FOCUS_MIN_ZOOM = 5.5;
-    const EEW_FOCUS_MAX_ZOOM = 6.5;
-    const reducedMotion = typeof window !== "undefined"
-      && window.matchMedia
-      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const duration = reducedMotion ? 0 : 1000;
-
-    if (fresh.length === 1) {
-      const zoom = Math.min(EEW_FOCUS_MAX_ZOOM, Math.max(EEW_FOCUS_MIN_ZOOM, map.getZoom()));
-      map.easeTo({
-        center: [fresh[0].longitude, fresh[0].latitude],
-        zoom,
-        duration,
-        // 横画面ではフローティングパネルが画面左側(約360px)を覆っているので、
-        // 見た目の中心が隠れない範囲の中央に来るようずらす(震源選択時と同じ)。
-        offset: isWide ? [230, 0] : [0, 0],
-      });
-    } else {
-      // 同時に複数の新規EEWが届いた/既に発表済みだった場合は、全部が収まるようにする。
-      let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
-      fresh.forEach(e => {
-        minLon = Math.min(minLon, e.longitude); maxLon = Math.max(maxLon, e.longitude);
-        minLat = Math.min(minLat, e.latitude); maxLat = Math.max(maxLat, e.latitude);
-      });
-      map.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-        padding: isWide
-          ? { top: 40, bottom: 40, left: 460, right: 40 }
-          : { top: 80, bottom: 220, left: 40, right: 40 },
-        maxZoom: EEW_FOCUS_MAX_ZOOM,
-        duration,
-      });
-    }
+    focusMapOnPoints(map, fresh.map(e => ({ lat: e.latitude, lon: e.longitude })), isWide);
   }, [eews, status, isWide]);
 
   // 緊急地震速報: areas[]に予測震度がある場合、その地域を細分区域.json上で
