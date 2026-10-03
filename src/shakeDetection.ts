@@ -1777,6 +1777,22 @@ export class ShakeDetectionEngine {
       this.events.delete(event.id);
     }
 
+    // 【対策: マグニチュードが検知時の小さな揺れ(P波の初動)で決まってしまう問題】
+    // 各観測点の記録(detectionTimes)のintensity/levelは、その点がイベントに
+    // 加わった時の値のまま、一部の経路でしか更新されていなかった。実データ
+    // (2021福島県沖M7.3・2026三陸沖M7.7のリプレイ)で、検知から数十秒経っても
+    // 記録の震度が検知時の1〜3台のままで、実際の最大(5〜6)より2〜3低く、
+    // 震源推定のマグニチュードが実際より2〜3も小さくなっていた。マグニチュード
+    // 推定は「その観測点のこれまでの最大振幅」を見るべき処理のため、毎tick、
+    // イベントに属する全観測点の記録を、現在の値が大きければ更新する。
+    for (const event of this.events.values()) {
+      for (const [id, d] of event.detectionTimes) {
+        const p = points.get(id);
+        if (!p || p.latestIntensity == null) continue;
+        if (d.intensity == null || p.latestIntensity > d.intensity) d.intensity = p.latestIntensity;
+      }
+    }
+
     // detectionTimes(Map)は外部にそのまま渡さず、epicenterEstimation.tsが
     // 使いやすい配列形式(detections)に変換して返す。震源推定を使わない
     // 既存の呼び出し側(App.jsx等)には影響しない追加フィールドなので、

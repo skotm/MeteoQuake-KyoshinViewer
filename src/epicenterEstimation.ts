@@ -259,6 +259,9 @@ const EXTENDED_GRID_SEARCH_RADIUS_DEG = 3.5;
 const SP_TIME_PENALTY_WEIGHT = 1.0;
 // S-P時間差の観測点ごとの残差(秒)の上限。computeSpTimePenaltyのコメント参照。
 const SP_TIME_RESIDUAL_CAP_SEC = 3;
+// これより短い観測S-P(秒)は、S波の検知がP波の初動から最短2秒後という下限に張り付いた
+// 人工物とみなして使わない(shakeDetection.tsのS_ARRIVAL_MIN_DELAY_MSより少し大きい値)。
+const SP_TIME_MIN_VALID_SEC = 2.5;
 // S-P時間差ペナルティの最低点数(点数が少なすぎると、たまたまの観測点
 // ごとのブレに引っ張られやすいため)。
 const MIN_POINTS_FOR_SP_TIME_CHECK = 3;
@@ -876,6 +879,15 @@ function computeSpTimePenalty(candidate, detections, detectionWeightById, penalt
     if (d.sWaveDetectedAt == null) continue;
     const observedSpSec = (d.sWaveDetectedAt - d.detectedAt) / 1000;
     if (observedSpSec < 0) continue; // 理論上あり得ない(データ不整合)ため除外
+    // 【対策: 海底・深発地震で震源が陸側・浅部に引き寄せられる問題】
+    // shakeDetection.tsは、P波の初動から S_ARRIVAL_MIN_DELAY_MS(2秒)経った後に
+    // 震度の急上昇が続いていれば、それをS波到達とみなす。海底や深さの大きい地震では
+    // 観測点がP波をはっきり捉えられず、P波の立ち上がりがだらだらと続くため、ほとんど
+    // の観測点で「最短の2秒後にS波到達」と判定されてしまう(2026三陸沖M7.7のリプレイで、
+    // S波を検知できた観測点の観測S-Pが2.0秒、理論値は9〜23秒)。これはS波を捉えた
+    // 値ではなく下限の人工物なので、ここで誤差関数に使うと「震源が観測点のすぐ近く・
+    // 浅い」という誤った制約になる。人工物とみなせる短いS-P(下限+0.5秒未満)は使わない。
+    if (observedSpSec < SP_TIME_MIN_VALID_SEC) continue;
     const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
     const distHypoKm = Math.sqrt(distKm * distKm + candidate.depthKm * candidate.depthKm);
     let expectedSpSec = null;
