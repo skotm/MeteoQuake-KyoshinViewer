@@ -99,6 +99,8 @@
  * 検知(要件E)に一本化している。
  */
 
+import { getJmaTravelTimeTable, lookupJmaTravelTime } from "./jmaTravelTime";
+
 export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   // 近傍点探索(initialize時に1度だけ計算。SetupNearPoints相当)
   neighborRadiusKm: 25,        // これより近い観測点同士を「近傍」とみなす
@@ -474,6 +476,16 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   // 高いため、mergeDistanceKm(40km、簡易判定用)よりは緩められるが、
   // それでも無関係な近隣の地震まで誤統合しないよう、控えめな値にする。
   mergeRefinedEstimateDistanceKm: 60,
+  // 【対策: 同じ地震が複数のイベントに分散する問題】統合判定に、収束済みの震源推定
+  // (主イベントの推定震源・発震時刻)から計算したP波・S波の走時を使う規則を加える
+  // (canEventBeMergedByTravelTime参照)。
+  mergeTravelTimeMinMainPoints: 20,  // 主イベントがこの点数以上で、推定が収束済みの時だけ使う
+  mergeTravelTimeEarlySec: 4,        // 観測点の検知がP波到達よりこれだけ早くても許容(秒、検知時刻の誤差)
+  mergeTravelTimeLateSec: 8,         // S波到達よりこれだけ遅くても許容(秒)
+  mergeTravelTimeUnconfirmedMinPoints: 100, // 推定が未収束でも、主イベントがこの点数以上なら使う
+  mergeTravelTimeInWindowRatio: 0.7, // 副イベントの観測点のうち、これ以上の割合が「P波〜S波」の窓に入れば統合
+  mergeSurfaceWaveMinMagnitude: 6.5, // 主イベントの推定がこのM以上なら、窓の終わりを表面波の到達まで延ばす
+  mergeSurfaceWaveSpeedKmS: 3.0,     // 表面波の速度の目安(km/s)
 };
 
 // 2点間の距離(km, 簡易haversine)
@@ -738,7 +750,67 @@ function canEventsShareOrigin(a, b, params) {
 // 統合する」という寛容な挙動を維持する(これは、本当に同じ地震の一部が
 // 処理タイミングの都合で分裂しているだけのケースを、材料不足を理由に
 // 誤って統合し損ねないようにするため)。
+// 【対策: 同じ地震が複数のイベントに分散する問題】
+// 大きな地震では、同じ地震なのに、震源から離れた観測点群が別の小さなイベント(多くは
+// 弱い遠方の揺れ、または震度の急上昇がS波到達で起きた観測点群)として検知され、統合
+// されないことが実データ(2024能登M7.6・2021福島県沖M7.3・2011東北沖M9.0)で確認された。
+// 従来の判定は、(1)起点同士の検知時刻差を最も遅い速度(3km/s)で割った許容値、(2)減衰式
+// による予測震度との差(許容1.5)、のどちらも、P波とS波の検知の違い・遠方での減衰式の偏り
+// に弱く、同じ地震の遠方の観測点群を弾いてしまっていた。
+// そこで、主イベントの収束済みの震源推定(位置・深さ・発震時刻)から、副イベントの各観測点
+// へのP波・S波の走時を計算し、各観測点の検知時刻が「P波到達の少し前〜S波到達の少し後」の
+// 窓に入っているかで、同じ地震の波が届いたものかを判定する。窓に入る観測点の割合が
+// mergeTravelTimeInWindowRatio以上なら、物理的に同じ地震とみなして統合する。
+// (別の地震の観測点群は、検知時刻が主震の窓に収まる確率が低い)
+function pAndSTravelSec(epicentralKm, depthKm) {
+  const t = lookupJmaTravelTime(getJmaTravelTimeTable(), epicentralKm, depthKm);
+  if (t && t.sTimeSec != null) return [t.pTimeSec, t.sTimeSec];
+  const hypoKm = Math.hypot(epicentralKm, depthKm);
+  return [hypoKm / 6.8, hypoKm / 3.9];
+}
+function canEventBeMergedByTravelTime(main, other, estMain, params) {
+  if (!estMain || estMain.originTime == null) return false;
+  if (main.pointCount < params.mergeTravelTimeMinMainPoints) return false;
+  // 推定が収束(confirmed)していなくても、主イベントが十分大きければ使う。2011東北沖M9.0の
+  // ように震源域が大きい地震では、推定が収束しないまま観測点が数百点になり、別イベントが
+  // 統合されずに残っていた。窓(P波〜S波/表面波)は広いので、粗い推定でも判定できる。
+  if (!estMain.confirmed && main.pointCount < params.mergeTravelTimeUnconfirmedMinPoints) return false;
+  const dets = [...other.detectionTimes.values()];
+  if (dets.length < 1) return false;
+  // 1点だけの副イベント(孤立した観測点の検知)は、偶然、窓に入る可能性が高いので、窓を
+  // 広げる加算(大きな地震の表面波・破壊継続時間)は使わず、P波〜S波の窓だけで判定する。
+  const strict = dets.length < 2;
+  let inWindow = 0;
+  for (const d of dets) {
+    const epiKm = haversineKm(estMain.lat, estMain.lon, d.lat, d.lon);
+    const [tp, ts] = pAndSTravelSec(epiKm, estMain.depthKm);
+    const lagSec = (d.detectedAt - estMain.originTime) / 1000 - tp; // P波到達からの遅れ
+    let lateLimitSec = (ts - tp) + params.mergeTravelTimeLateSec;
+    // 大きな地震(推定M6.5以上)では、遠方の観測点が、S波ではなく、その後に届く表面波
+    // (速度およそmergeSurfaceWaveSpeedKmS)の立ち上がりで初めて検知されることがある
+    // (2021福島県沖M7.3で、震源から250〜300km離れた新潟・山形の観測点群が、P波到達の
+    // 約60〜70秒後に検知された)。この場合は、窓の終わりを表面波の到達まで延ばす。
+    if (!strict && estMain.magnitude != null && estMain.magnitude >= params.mergeSurfaceWaveMinMagnitude) {
+      const hypoKm = Math.hypot(epiKm, estMain.depthKm);
+      lateLimitSec = Math.max(lateLimitSec, hypoKm / params.mergeSurfaceWaveSpeedKmS - tp + params.mergeTravelTimeLateSec);
+      // 震源の破壊が続く時間(目安 10^(0.5×(M-5)) 秒。M7で約10秒、M7.6で約20秒、M8で約30秒)
+      // だけ、強い揺れの到達が遅れる。2024能登M7.6で、震源から100〜120kmの新潟の観測点が、
+      // 強い揺れ(震度5)を捉えて検知されたのは、P波到達の約30秒後だった(S波は約13秒後)。
+      lateLimitSec += Math.pow(10, 0.5 * (estMain.magnitude - 5));
+    }
+    if (lagSec >= -params.mergeTravelTimeEarlySec && lagSec <= lateLimitSec) inWindow++;
+  }
+  return inWindow / dets.length >= params.mergeTravelTimeInWindowRatio;
+}
+
 function canEventsMerge(a, b, params, externalEstimates) {
+  // 【対策】収束済みの主イベントの推定から計算した走時の窓に、副イベントの観測点が
+  // 収まっていれば、同じ地震として統合する(上のcanEventBeMergedByTravelTime参照)。
+  if (externalEstimates) {
+    const aIsMain = a.pointCount >= b.pointCount;
+    const main = aIsMain ? a : b, other = aIsMain ? b : a;
+    if (canEventBeMergedByTravelTime(main, other, externalEstimates.get(main.id), params)) return true;
+  }
   // 【対策C】精度の高い外部推定(epicenterEstimation.ts)が両方のイベントで
   // 収束済みであれば、それを最優先で使う。null(判定材料不足)の場合のみ、
   // 以下の簡易チェックにフォールバックする。
