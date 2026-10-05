@@ -26,6 +26,7 @@ export function SettingsBody({
   replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
+  cameraSettings, onChangeCameraSettings,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,
@@ -462,6 +463,40 @@ export function SettingsBody({
             checked={glassOpaqueEnabled}
             onChange={() => onChangeGlassOpaqueOverride(glassOpaqueEnabled ? "off" : "on")}
             disabled={glassOpaqueSuspectedBroken}
+          />
+        </SettingsCard>
+      </>
+    );
+  }
+
+  // カメラの動き(詳細設定の項目)。緊急地震速報・揺れ検知での地図の自動ズームの設定。
+  if (category === "advanced" && leaf === "camera") {
+    const cs = cameraSettings;
+    return (
+      <>
+        <SettingsHeader title="カメラの動き"/>
+        <SettingsCard>
+          <SettingsToggleRow
+            label="緊急地震速報で震源へ移動"
+            description="緊急地震速報の第一報(アプリを開いた時点で既に発表されていた速報を含む)で、震源が画面に収まるように地図を動かします。続報では動かしません(初期設定はオン)。"
+            checked={cs.eewFocus}
+            onChange={() => onChangeCameraSettings({ eewFocus: !cs.eewFocus })}
+          />
+        </SettingsCard>
+        <SettingsCard>
+          <SettingsToggleRow
+            label="揺れ検知で観測点に合わせて移動"
+            description="揺れを検知したら、検知した観測点が画面に収まるように地図を動かします。観測点が増えて画面の端からはみ出しそうになったら、ズームを調整します(初期設定はオン)。"
+            checked={cs.shakeFollow}
+            onChange={() => onChangeCameraSettings({ shakeFollow: !cs.shakeFollow })}
+          />
+          <SettingsCardDivider/>
+          <SettingsToggleRow
+            label="操作後に自動ズームを再開"
+            description="地図を自分で動かしても、2秒間操作がなければ、揺れ検知の自動ズームを再開します。オフの時は、動かした後その揺れ検知では自動で動かしません(初期設定はオン)。"
+            checked={cs.autoResume}
+            onChange={() => onChangeCameraSettings({ autoResume: !cs.autoResume })}
+            disabled={!cs.shakeFollow}
           />
         </SettingsCard>
       </>

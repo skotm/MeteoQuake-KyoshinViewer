@@ -63,6 +63,7 @@ export function BottomDock({
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
+  cameraSettings, onChangeCameraSettings,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
   shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
@@ -1662,6 +1663,8 @@ export function BottomDock({
                   onChangeReplayJmaColorEnabled={onChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={onChangeShakeDetectionEnabled}
+                  cameraSettings={cameraSettings}
+                  onChangeCameraSettings={onChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={onChangeEpicenterEstimationEnabled}
                   testTsunami={testTsunami}

@@ -3,8 +3,10 @@ import { useRef, useState, useContext, useEffect } from "react";
 import { ShakeDetectionEngine } from "../shakeDetection";
 import { EpicenterEstimator } from "../epicenterEstimation";
 import { P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "../shakeTestSimulation";
-import { pickEewsToFocus, pickShakeFollowTarget } from "../eewCameraFocus";
-import { focusMapOnPoints, pointsNeedRefit } from "./mapFocus";
+import { pickEewsToFocus } from "../eewCameraFocus";
+import { focusMapOnPoints } from "./mapFocus";
+import { ShakeCameraFollower, SHAKE_RESUME_MS } from "./shakeCameraFollow";
+import { DEFAULT_CAMERA_SETTINGS } from "./settingsStorage";
 import { EMPTY_REALTIME_VALUES, QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, intensityValueToKey, replayJmaSubthresholdColor } from "./colorSchemes";
 import { ThemeContext } from "./theme";
 import { buildMapStyle, loadEpicenterNamesData, loadFaultsData, loadGeoData, loadMapLibre, loadPlateBoundariesData, loadTsunamiAreasData } from "./mapDataLoaders";
@@ -58,6 +60,7 @@ export function MapCanvas({
   replayDataTimeMs = null,
   replayPlaying = false,
   shakeDetectionEnabled = true,
+  cameraSettings = DEFAULT_CAMERA_SETTINGS,
   onShakeEventsChange,
   // 震源推定(epicenterEstimation.ts、実験的機能)。デフォルトOFF。
   // 揺れ検知(shakeDetectionEnabled)自体がOFFの間は、推定に使う揺れ検知
@@ -1260,25 +1263,43 @@ export function MapCanvas({
   // リプレイで再現)。リプレイ中はデータ上の時刻(フレームのdataTime)をエンジン
   // 時刻とし、再生速度に依存しないようにする。リアルタイム・検知テストは従来
   // どおりDate.now()。
-  // 揺れ検知の視点移動の追従状態(追従中のイベントID / 最後に視点を合わせた壁時計時刻 /
-  // ユーザーが地図を自分で動かしたか)。
-  const shakeFollowRef = useRef({ eventId: null, lastFitAt: 0, userOverride: false });
-  const SHAKE_REFIT_MIN_INTERVAL_MS = 900;
-  // ユーザー操作(ドラッグ・ズーム)を検知したら、追従中のイベントの自動調整を止める。
-  // 自動の視点移動(fitBounds)にはoriginalEventが付かないので、区別できる。
+  // 揺れ検知の視点の追従(shakeCameraFollow.js)と、ユーザーの地図操作の監視。
+  // 設定(カメラの動き)・横画面かどうかは、地図のイベントやタイマーから最新の値を読むためrefに写す。
+  const shakeFollowerRef = useRef(null);
+  if (!shakeFollowerRef.current) shakeFollowerRef.current = new ShakeCameraFollower();
+  const cameraSettingsRef = useRef(cameraSettings);
+  cameraSettingsRef.current = cameraSettings;
+  const isWideRef = useRef(isWide);
+  isWideRef.current = isWide;
+  // 地図を自分で動かした(ドラッグ・ピンチ・ホイールなど。イベントにoriginalEventが付く)間は、
+  // 自動の視点調整を止める。自動のfitBoundsにはoriginalEventが付かないので区別できる。
+  // 操作が終わってからSHAKE_RESUME_MS(2秒)の間に次の操作が無ければ、揺れ検知の追従中のイベント
+  // について自動ズームを再開する(設定「操作後に自動ズームを再開」がオンの時)。
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== "ready") return undefined;
-    const onUserMove = (e) => { if (e && e.originalEvent) shakeFollowRef.current.userOverride = true; };
-    map.on("dragstart", onUserMove);
-    map.on("zoomstart", onUserMove);
-    map.on("pitchstart", onUserMove);
-    map.on("rotatestart", onUserMove);
+    const follower = shakeFollowerRef.current;
+    let timer = null;
+    const clearTimer = () => { if (timer != null) { clearTimeout(timer); timer = null; } };
+    const onMoveStart = (e) => { if (e && e.originalEvent) { clearTimer(); follower.onUserMoveStart(Date.now()); } };
+    const onMove = () => follower.onUserMove(Date.now());
+    const onMoveEnd = () => {
+      if (!follower.userMoving) return;
+      follower.onUserMoveEnd(Date.now());
+      clearTimer();
+      timer = setTimeout(() => {
+        timer = null;
+        follower.checkResume({ map, isWide: isWideRef.current, nowMs: Date.now(), settings: cameraSettingsRef.current });
+      }, SHAKE_RESUME_MS + 30);
+    };
+    map.on("movestart", onMoveStart);
+    map.on("move", onMove);
+    map.on("moveend", onMoveEnd);
     return () => {
-      map.off("dragstart", onUserMove);
-      map.off("zoomstart", onUserMove);
-      map.off("pitchstart", onUserMove);
-      map.off("rotatestart", onUserMove);
+      clearTimer();
+      map.off("movestart", onMoveStart);
+      map.off("move", onMove);
+      map.off("moveend", onMoveEnd);
     };
   }, [status]);
   const lastEngineNowRef = useRef(null);
@@ -1452,26 +1473,13 @@ export function MapCanvas({
       : [];
 
     // 揺れ検知の視点移動。確定したイベントを1つ追従し、最初の検知で、そのイベントの観測点が
-    // 全部収まるよう(フローティングを除いた部分の中心に)視点を移動する。その後、イベント
-    // が育って観測点が増え、画面の端からはみ出しそうになったら、もう一度調整する。
-    // 判定は eewCameraFocus.ts の pickShakeFollowTarget、位置合わせは mapFocus.js を参照。
-    // ユーザーが自分で地図を動かした(ドラッグ・ピンチ・ホイール)後は、そのイベントについて
-    // は自動調整しない(勝手に視点が戻されないように)。
-    {
-      const follow = shakeFollowRef.current;
-      const { target, switched } = pickShakeFollowTarget(shakeEvents, follow.eventId);
-      const nowMs = Date.now();
-      if (!target) {
-        if (switched) shakeFollowRef.current = { eventId: null, lastFitAt: 0, userOverride: false };
-      } else if (switched) {
-        shakeFollowRef.current = { eventId: target.id, lastFitAt: nowMs, userOverride: false };
-        focusMapOnPoints(map, target.detections, isWide);
-      } else if (!follow.userOverride && nowMs - follow.lastFitAt >= SHAKE_REFIT_MIN_INTERVAL_MS
-        && pointsNeedRefit(map, target.detections, isWide)) {
-        follow.lastFitAt = nowMs;
-        focusMapOnPoints(map, target.detections, isWide, { duration: 800 });
-      }
-    }
+    // 全部収まるよう(フローティングを除いた部分の中心に)視点を移動する。その後、イベントが
+    // 育って観測点が増え、画面の端からはみ出しそうになったら、もう一度調整する。
+    // ユーザーが地図を操作している間と操作後2秒間は動かさず、2秒間操作が無ければ再開する。
+    // 設定「カメラの動き」で切り替えられる。判断は shakeCameraFollow.js を参照。
+    shakeFollowerRef.current.tick({
+      map, events: shakeEvents, isWide, nowMs: Date.now(), settings: cameraSettings,
+    });
     lastShakeEventsRef.current = shakeEvents;
     const shakeSource = map.getSource("shake-events");
     if (shakeSource) {
@@ -1528,7 +1536,7 @@ export function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs, isWide]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs, isWide, cameraSettings]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、
@@ -1659,11 +1667,12 @@ export function MapCanvas({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== "ready") return;
+    // 設定がオフでも「見た」ことにはする(後でオンにした時に、古い速報で急に動かないように)。
     const fresh = pickEewsToFocus(eews, focusedEewEventIdsRef.current);
-    if (fresh.length === 0) return;
+    if (fresh.length === 0 || !cameraSettings.eewFocus) return;
 
     focusMapOnPoints(map, fresh.map(e => ({ lat: e.latitude, lon: e.longitude })), isWide);
-  }, [eews, status, isWide]);
+  }, [eews, status, isWide, cameraSettings.eewFocus]);
 
   // 緊急地震速報: areas[]に予測震度がある場合、その地域を細分区域.json上で
   // 名前が一致するポリゴンを探し、震度の色で塗りつぶす。P/S波の円と違って
