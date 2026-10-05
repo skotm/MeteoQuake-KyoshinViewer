@@ -380,3 +380,34 @@ export function saveStationListDisplayMode(mode) {
     console.warn("震度観測点リストの表示設定を保存できませんでした:", err);
   }
 }
+
+/* ─────────────────────────────────────────────────────
+   カメラの動き(詳細設定 > カメラの動き)。localStorageにJSONで永続化する。初期設定はすべてオン。
+     eewFocus    : 緊急地震速報の第一報で、震源が画面に収まるよう地図を動かす
+     shakeFollow : 揺れ検知で、検知した観測点が画面に収まるよう地図を動かし、はみ出しそうなら調整する
+     autoResume  : 地図を自分で動かしても、2秒間操作がなければ、揺れ検知の自動調整を再開する
+   ───────────────────────────────────────────────────── */
+const CAMERA_SETTINGS_STORAGE_KEY = "cameraSettings";
+export const DEFAULT_CAMERA_SETTINGS = Object.freeze({ eewFocus: true, shakeFollow: true, autoResume: true });
+
+export function loadStoredCameraSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CAMERA_SETTINGS_STORAGE_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      const out = { ...DEFAULT_CAMERA_SETTINGS };
+      for (const key of Object.keys(DEFAULT_CAMERA_SETTINGS)) if (typeof saved[key] === "boolean") out[key] = saved[key];
+      return out;
+    }
+  } catch (err) {
+    console.warn("カメラの動きの設定を読み込めませんでした:", err);
+  }
+  return { ...DEFAULT_CAMERA_SETTINGS };
+}
+
+export function saveCameraSettings(settings) {
+  try {
+    localStorage.setItem(CAMERA_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (err) {
+    console.warn("カメラの動きの設定を保存できませんでした:", err);
+  }
+}

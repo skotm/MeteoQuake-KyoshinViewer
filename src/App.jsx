@@ -10,7 +10,7 @@ import { Filters, LAYERS } from "./app/navigation";
 import { useIsStandalonePwa, useIsWideLayout, useWideUIScale } from "./app/layoutHooks";
 import { Glass, GlassOpaqueContext, PressableButton, detectSuspectedBackdropFilterBreakage, loadGlassOpaqueOverride, saveGlassOpaqueOverride } from "./app/glass";
 import { THEME_TOKENS, ThemeContext, loadStoredThemeModePref, saveThemeModePref, useSystemThemeMode } from "./app/theme";
-import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveStationListDisplayMode } from "./app/settingsStorage";
+import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveStationListDisplayMode, loadStoredCameraSettings, saveCameraSettings } from "./app/settingsStorage";
 import { EEW_CANCEL_LINGER_MS, EEW_MAX_CONCURRENT, EEW_STALE_MS, connectQuakeWebSocket, connectWolfxEewWebSocket, fetchLatestFreshEew, fetchLatestFreshEewFromWolfx } from "./app/liveFeeds";
 import { loadGeoData, loadTsunamiAreasData } from "./app/mapDataLoaders";
 import { buildTestQuakeStageCard, calcTestEewAreasByAttenuation, isTestWarnLevel } from "./app/testSimulation";
@@ -243,6 +243,15 @@ export default function App() {
   // 揺れ検知エンジン(shakeDetection.ts)自体のON/OFF。設定タブ(タブ設定 >
   // リアルタイム)で操作し、他の設定と同じくlocalStorageに永続化する。
   const [shakeDetectionEnabled, setShakeDetectionEnabledState] = useState(loadStoredShakeDetectionEnabled);
+  // カメラの動き(詳細設定 > カメラの動き)。緊急地震速報・揺れ検知での地図の自動ズームの設定。
+  const [cameraSettings, setCameraSettings] = useState(loadStoredCameraSettings);
+  function handleChangeCameraSettings(patch) {
+    setCameraSettings(prev => {
+      const next = { ...prev, ...patch };
+      saveCameraSettings(next);
+      return next;
+    });
+  }
 
   function handleChangeShakeDetectionEnabled(next) {
     setShakeDetectionEnabledState(next);
@@ -2265,6 +2274,7 @@ export default function App() {
           replayPlaying={replayPlayer.isPlaying}
           replayDataTimeMs={replayPlayer.loaded ? (replayPlayer.frames[replayPlayer.currentIndex]?.dataTime?.getTime() ?? null) : null}
           shakeDetectionEnabled={shakeDetectionEnabled}
+          cameraSettings={cameraSettings}
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
           onEpicenterEstimateChange={setEpicenterEstimates}
@@ -2566,6 +2576,10 @@ export default function App() {
                   onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+              cameraSettings={cameraSettings}
+              onChangeCameraSettings={handleChangeCameraSettings}
+                  cameraSettings={cameraSettings}
+                  onChangeCameraSettings={handleChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
                   shakeEvents={shakeEvents}

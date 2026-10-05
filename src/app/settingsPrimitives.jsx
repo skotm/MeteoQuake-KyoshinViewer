@@ -37,6 +37,7 @@ export const TAB_SETTINGS_CATEGORIES = [
 export const SETTINGS_ITEMS = {
   advanced: [
     { id: "appearance", label: "外観" },
+    { id: "camera", label: "カメラの動き" },
     // 【廃止】APIトークン入力機能を廃止したため、設定メニューからも除外。
     // { id: "realtimeApi", label: "リアルタイムAPI" },
     { id: "replay", label: "リプレイ" },
