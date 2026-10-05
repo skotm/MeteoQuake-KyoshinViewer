@@ -3,8 +3,8 @@ import { useRef, useState, useContext, useEffect } from "react";
 import { ShakeDetectionEngine } from "../shakeDetection";
 import { EpicenterEstimator } from "../epicenterEstimation";
 import { P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "../shakeTestSimulation";
-import { pickEewsToFocus, pickShakeEventToFocus } from "../eewCameraFocus";
-import { focusMapOnPoints } from "./mapFocus";
+import { pickEewsToFocus, pickShakeFollowTarget } from "../eewCameraFocus";
+import { focusMapOnPoints, pointsNeedRefit } from "./mapFocus";
 import { EMPTY_REALTIME_VALUES, QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, intensityValueToKey, replayJmaSubthresholdColor } from "./colorSchemes";
 import { ThemeContext } from "./theme";
 import { buildMapStyle, loadEpicenterNamesData, loadFaultsData, loadGeoData, loadMapLibre, loadPlateBoundariesData, loadTsunamiAreasData } from "./mapDataLoaders";
@@ -1260,9 +1260,27 @@ export function MapCanvas({
   // リプレイで再現)。リプレイ中はデータ上の時刻(フレームのdataTime)をエンジン
   // 時刻とし、再生速度に依存しないようにする。リアルタイム・検知テストは従来
   // どおりDate.now()。
-  // 揺れ検知イベントの視点移動用(既に視点移動の対象にしたイベントID / 最後に移動した壁時計時刻)。
-  const focusedShakeEventIdsRef = useRef(new Set());
-  const lastShakeFocusAtRef = useRef(null);
+  // 揺れ検知の視点移動の追従状態(追従中のイベントID / 最後に視点を合わせた壁時計時刻 /
+  // ユーザーが地図を自分で動かしたか)。
+  const shakeFollowRef = useRef({ eventId: null, lastFitAt: 0, userOverride: false });
+  const SHAKE_REFIT_MIN_INTERVAL_MS = 900;
+  // ユーザー操作(ドラッグ・ズーム)を検知したら、追従中のイベントの自動調整を止める。
+  // 自動の視点移動(fitBounds)にはoriginalEventが付かないので、区別できる。
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || status !== "ready") return undefined;
+    const onUserMove = (e) => { if (e && e.originalEvent) shakeFollowRef.current.userOverride = true; };
+    map.on("dragstart", onUserMove);
+    map.on("zoomstart", onUserMove);
+    map.on("pitchstart", onUserMove);
+    map.on("rotatestart", onUserMove);
+    return () => {
+      map.off("dragstart", onUserMove);
+      map.off("zoomstart", onUserMove);
+      map.off("pitchstart", onUserMove);
+      map.off("rotatestart", onUserMove);
+    };
+  }, [status]);
   const lastEngineNowRef = useRef(null);
   // 検知エンジン(processTick)を最後に実際に進めた時に渡した震度値のMap。
   // 新しいデータが届くたびに新しいMapが作られる(リアルタイム・リプレイ・テスト共通)
@@ -1433,15 +1451,25 @@ export function MapCanvas({
         : (lastProcessedValuesRef.current = realtimeValues, shakeEngineRef.current.processTick(realtimeValues, engineNow)))
       : [];
 
-    // 揺れ検知カードが出る(確定した)イベントを初めて見た時に、その検知位置へ視点を
-    // 移動する(緊急地震速報の第一報と同じ考え方。判定は eewCameraFocus.ts の
-    // pickShakeEventToFocus を参照)。大きな地震で同じ地震が複数のイベントに分かれて
-    // 次々に確定しても、直前の移動から一定時間は動かさない。
+    // 揺れ検知の視点移動。確定したイベントを1つ追従し、最初の検知で、そのイベントの観測点が
+    // 全部収まるよう(フローティングを除いた部分の中心に)視点を移動する。その後、イベント
+    // が育って観測点が増え、画面の端からはみ出しそうになったら、もう一度調整する。
+    // 判定は eewCameraFocus.ts の pickShakeFollowTarget、位置合わせは mapFocus.js を参照。
+    // ユーザーが自分で地図を動かした(ドラッグ・ピンチ・ホイール)後は、そのイベントについて
+    // は自動調整しない(勝手に視点が戻されないように)。
     {
-      const focusEvent = pickShakeEventToFocus(shakeEvents, focusedShakeEventIdsRef.current, Date.now(), lastShakeFocusAtRef.current);
-      if (focusEvent) {
-        lastShakeFocusAtRef.current = Date.now();
-        focusMapOnPoints(map, [{ lat: focusEvent.centerLat, lon: focusEvent.centerLon }], isWide);
+      const follow = shakeFollowRef.current;
+      const { target, switched } = pickShakeFollowTarget(shakeEvents, follow.eventId);
+      const nowMs = Date.now();
+      if (!target) {
+        if (switched) shakeFollowRef.current = { eventId: null, lastFitAt: 0, userOverride: false };
+      } else if (switched) {
+        shakeFollowRef.current = { eventId: target.id, lastFitAt: nowMs, userOverride: false };
+        focusMapOnPoints(map, target.detections, isWide);
+      } else if (!follow.userOverride && nowMs - follow.lastFitAt >= SHAKE_REFIT_MIN_INTERVAL_MS
+        && pointsNeedRefit(map, target.detections, isWide)) {
+        follow.lastFitAt = nowMs;
+        focusMapOnPoints(map, target.detections, isWide, { duration: 800 });
       }
     }
     lastShakeEventsRef.current = shakeEvents;

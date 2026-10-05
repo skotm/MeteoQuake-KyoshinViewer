@@ -226,11 +226,21 @@ function prefectureFromRegionName(regionName) {
   return null;
 }
 
-// 揺れ検知イベントの観測点群(points: {id, lat, lon}[])の場所を、震央地名の区域
-// → 都道府県 → 地方名の順に、少しずつ広げながら「ただ1つ」に絞れる最初の粒度で返す
-// ({ name, level: "region" | "prefecture" | "area" })。地方でも1つに絞れない場合や、
-// 判定できない場合はnull(どれか1つを代表に選ぶと誤解を招くため、地名は出さない)。
-// 各粒度で、その粒度の名前を判定できない観測点(区域外など)は無視する。
+// 地方名を北から南へ並べる順(複数の地方にまたがる時の表示順)。
+const AREA_ORDER = ["北海道地方", "東北地方", "関東地方", "中部地方", "近畿地方", "中国地方", "四国地方", "九州地方", "沖縄地方"];
+// 複数の地方にまたがる時、地方名をいくつまで並べて書くか。これより多い時は「広い範囲」。
+const MAX_AREAS_LISTED = 3;
+// 検知した観測点の数のうち、これ未満の割合しかない地方は、飛び地の1〜2点とみなして数えない。
+const MIN_AREA_SHARE = 0.05;
+
+// 揺れ検知イベントの観測点群(points: {id, lat, lon}[])の場所を表す名前を返す。
+// 震央地名の区域 → 都道府県 → 地方名の順に、少しずつ広げながら「ただ1つ」に絞れる最初の粒度
+// ({ name, level: "region" | "prefecture" | "area" })。地方でも1つに絞れない時は、
+// またがる地方名を北から並べる({ name: "東北・関東地方", level: "areas" })。またがる地方が
+// MAX_AREAS_LISTEDより多い時は { name: "広い範囲", level: "wide" }。
+// 判定できる観測点が1つも無い時だけnull。
+// 各粒度で、その粒度の名前を判定できない観測点(区域外など)は無視する。地方の粒度では、
+// 観測点数の5%未満しかない地方は飛び地とみなして数えない。
 // geo = { epicenterNames: ep.json, prefectures: prefectures.json }(どちらもnull可)。
 // cache(観測点ID→{region, prefecture, area})を渡すと、同じ観測点のポリゴン走査を
 // 繰り返さない(データは変わらないので、観測点IDごとの結果は使い回せる)。
@@ -247,12 +257,23 @@ export function findSingleEpicenterPlace(geo, points, cache = new Map()) {
     }
     infos.push(info);
   }
-  for (const [level, key] of [["region", "region"], ["prefecture", "prefecture"], ["area", "area"]]) {
+  for (const [level, key] of [["region", "region"], ["prefecture", "prefecture"]]) {
     const names = new Set();
     for (const info of infos) if (info[key]) names.add(info[key]);
     if (names.size === 1) return { name: [...names][0], level };
   }
-  return null;
+  // 地方の粒度。数の少ない飛び地は除いて数える。
+  const counts = new Map();
+  let known = 0;
+  for (const info of infos) if (info.area) { counts.set(info.area, (counts.get(info.area) ?? 0) + 1); known++; }
+  if (known === 0) return null;
+  const minCount = Math.max(1, Math.ceil(known * MIN_AREA_SHARE));
+  const areas = [...counts].filter(([, n]) => n >= minCount).map(([a]) => a)
+    .sort((x, y) => AREA_ORDER.indexOf(x) - AREA_ORDER.indexOf(y));
+  if (areas.length === 1) return { name: areas[0], level: "area" };
+  if (areas.length > MAX_AREAS_LISTED) return { name: "広い範囲", level: "wide" };
+  // 「東北地方」「関東地方」→「東北・関東地方」
+  return { name: areas.map(a => a.replace(/地方$/, "")).join("・") + "地方", level: "areas" };
 }
 
 // 観測点マスタ(stations)から、eqdbの観測点名(name)に対応する地点を探し、
