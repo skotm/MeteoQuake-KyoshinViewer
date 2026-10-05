@@ -1284,8 +1284,9 @@ export function BottomDock({
       {(() => {
         const GlassOrPlain = isWide ? "div" : Glass;
         const glassProps = isWide
-          ? { ref: wideContentRef, style: { width: "clamp(240px, 30vw, 380px)", height: "100%", overflow: "hidden", position: "relative" } }
+          ? { ref: wideContentRef, "data-floating-panel": "dock", style: { width: "clamp(240px, 30vw, 380px)", height: "100%", overflow: "hidden", position: "relative" } }
           : {
+              "data-floating-panel": "dock", // 視点移動(mapFocus.js)が、フローティングに隠れる範囲を実測するための目印
               filterSize: settled ? "normal" : "none",
               blur: settled ? 14 : 8,
               style: {

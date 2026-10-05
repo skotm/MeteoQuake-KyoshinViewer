@@ -36,36 +36,30 @@ export function pickEewsToFocus<T extends EewForFocus>(eews: T[] | null | undefi
 }
 
 // ── 揺れ検知(shakeDetection.ts)のイベント ──────────────────────────────
-// 揺れ検知カードが出る(= 確定した)イベントを初めて見た時に、そのイベントの
-// 検知位置(centerLat/centerLon)へ視点を移動するための判定。
-//  - 移動するのは、確定済み(confirmed)で、位置があり、このセッションで初めて見たイベントID。
-//    続報(同じイベントの観測点数増加)では動かさない。
-//  - 大きな地震では、同じ地震が複数のイベントに分かれて次々に確定することがある。直前の
-//    視点移動から SHAKE_FOCUS_COOLDOWN_MS 以内に確定したイベントは、動かさず「見た」
-//    ことにする(クールダウンが明けた後で遅れて動くのを防ぐ)。
-//  - 同時に複数が新規になった場合は、観測点数が最も多いイベントへ移動する。
-export const SHAKE_FOCUS_COOLDOWN_MS = 60000;
-
-export type ShakeEventForFocus = {
+// 揺れ検知では、確定したイベントを1つ選んで「追従」する。追従中は、イベントの観測点が
+// 増えて画面の端からはみ出しそうになったら、視点を調整する(MapCanvas.jsx)。
+//  - 追従先は、確定済み(confirmed)で観測点の位置(detections)があるイベント。
+//  - 追従中のイベントが残っている間は、別のイベントが現れても乗り換えない
+//    (大きな地震で同じ地震が複数のイベントに分かれても、視点がふらつかない)。
+//  - 追従中のイベントが無くなった(統合されて消えた/期限切れ)時は、その時点で最も大きい
+//    確定イベントに乗り換える。確定イベントが1つも無くなれば追従を終える。次に確定した
+//    イベントは「最初の検知」として改めて視点移動の対象になる(以前は直前の移動から
+//    60秒以内だと動かず、リプレイや検知テストのやり直しで視点が動かない原因になっていた)。
+export type ShakeEventForFollow = {
   id: number;
   confirmed?: boolean;
   pointCount?: number;
-  centerLat?: number | null;
-  centerLon?: number | null;
+  detections?: { lat: number; lon: number }[];
 };
 
-export function pickShakeEventToFocus<T extends ShakeEventForFocus>(
+export function pickShakeFollowTarget<T extends ShakeEventForFollow>(
   events: T[] | null | undefined,
-  focusedIds: Set<number>,
-  nowMs: number,
-  lastFocusAtMs: number | null,
-): T | null {
-  let best: T | null = null;
-  for (const ev of events || []) {
-    if (!ev.confirmed || ev.centerLat == null || ev.centerLon == null || focusedIds.has(ev.id)) continue;
-    focusedIds.add(ev.id);
-    if (!best || (ev.pointCount ?? 0) > (best.pointCount ?? 0)) best = ev;
-  }
-  if (best && lastFocusAtMs != null && nowMs - lastFocusAtMs < SHAKE_FOCUS_COOLDOWN_MS) return null;
-  return best;
+  followedId: number | null,
+): { target: T | null; switched: boolean } {
+  const confirmed = (events || []).filter(e => e.confirmed && Array.isArray(e.detections) && e.detections.length > 0);
+  if (confirmed.length === 0) return { target: null, switched: followedId != null };
+  const current = confirmed.find(e => e.id === followedId);
+  if (current) return { target: current, switched: false };
+  const target = confirmed.reduce((a, b) => ((b.pointCount ?? 0) > (a.pointCount ?? 0) ? b : a));
+  return { target, switched: true };
 }
