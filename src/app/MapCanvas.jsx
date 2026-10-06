@@ -12,7 +12,7 @@ import { ThemeContext } from "./theme";
 import { buildMapStyle, loadEpicenterNamesData, loadFaultsData, loadGeoData, loadMapLibre, loadPlateBoundariesData, loadTsunamiAreasData } from "./mapDataLoaders";
 import { BOUNDARY_LINE_COLORS, EEW_FILL_LEGEND_ORDER, INTENSITY_LABEL, STATION_ICON_BASE_RADIUS, STATION_ICON_KEYS, getBoundaryHaloColor, registerAreaIcons, registerStationIcons } from "./stationIcons";
 import { EST_INTENSITY_MIN_INTENSITY_KEYS, QUAKE_INTENSITY_RANK, buildEpicenterCircleColorExpr, buildEpicenterCircleStrokeColorExpr, buildEstIntensityFillColorExpr, buildEstIntensityFillFeatures, buildEstIntensityGridFromImage, buildEstIntensityLineCoords, fetchEstimatedIntensityMatch, loadImageElement, meshCodeToBounds, offsetMeshCode } from "./estIntensity";
-import { EPICENTER_LABEL_CANVAS_SCALE, buildDetectedStationIdSet, buildEpicenterEstimateFeatures, buildShakeEventFeatures, buildTrueEpicenterFeatures, drawEpicenterLabelCanvas, updateEpicenterEstimateLabels } from "./shakeMapLayers";
+import { EPICENTER_LABEL_CANVAS_SCALE, buildDetectedStationIdSet, buildEpicenterEstimateFeatures, buildTrueEpicenterFeatures, drawEpicenterLabelCanvas, updateEpicenterEstimateLabels } from "./shakeMapLayers";
 import { filterEstimatesNearEew } from "./eewEstimateFilter";
 import { findAreaCodesByName, findEpicenterNameByPoint, findNearestTsunamiAreaWithDistance } from "./geo";
 import { EEW_P_WAVE_SPEED_KM_S, EEW_S_WAVE_SPEED_KM_S, eewCirclePolygon, eewWaveSurfaceRadiusKm } from "./liveFeeds";
@@ -609,39 +609,6 @@ export function MapCanvas({
             map.getCanvas().style.cursor = "";
           });
 
-          // 揺れ検知(shakeDetection.ts / ShakeDetectionEngine)で検出したイベントの
-          // 範囲を、観測点の下地として塗りつぶし円で表示する。観測点のドット自体は
-          // この上に重なるよう、realtime-points-layerより先に追加しておく。
-          // circle-radius(ピクセル指定)だとズームで地図に対する大きさが変わって
-          // 見えるため、実座標(メートル)固定の円ポリゴンを自前で組み立てる
-          // fill+line方式にしている(buildShakeEventFeatures参照)。座標自体が
-          // 実座標なので、ズーム時の再計算は不要 — MapLibreが自動で再投影する。
-          map.addSource("shake-events", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [] },
-          });
-          map.addLayer({
-            id: "shake-events-layer",
-            type: "fill",
-            source: "shake-events",
-            layout: { visibility: "none" },
-            paint: {
-              "fill-color": "#FFC107",
-              "fill-opacity": ["case", ["get", "confirmed"], 0.22, 0.10],
-            },
-          });
-          map.addLayer({
-            id: "shake-events-outline-layer",
-            type: "line",
-            source: "shake-events",
-            layout: { visibility: "none" },
-            paint: {
-              "line-color": "#FFC107",
-              "line-width": ["case", ["get", "confirmed"], 2, 1],
-              "line-opacity": ["case", ["get", "confirmed"], 0.9, 0.45],
-            },
-          });
-
           // 地震検知テスト(shakeTestSimulation.ts)の「正解」の震源。
           // 菱形(縁が黒い白い四角)で表示し、下で追加する震源推定の
           // マーカー(白丸黒縁)より先に追加する=描画順で下に敷く
@@ -1125,21 +1092,6 @@ export function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-    // 揺れ検知イベントのレイヤーも、強震モニタ本体が表示されている間だけ出す。
-    if (map.getLayer("shake-events-layer")) {
-      map.setLayoutProperty(
-        "shake-events-layer",
-        "visibility",
-        showRealtimeMapLayers ? "visible" : "none"
-      );
-    }
-    if (map.getLayer("shake-events-outline-layer")) {
-      map.setLayoutProperty(
-        "shake-events-outline-layer",
-        "visibility",
-        showRealtimeMapLayers ? "visible" : "none"
-      );
-    }
     // 震源推定マーカーも、強震モニタ本体+震源推定機能自体がONの間だけ出す。
     if (map.getLayer("epicenter-estimates-layer")) {
       map.setLayoutProperty(
@@ -1485,13 +1437,6 @@ export function MapCanvas({
       map, events: shakeEvents, isWide, nowMs: Date.now(), settings: cameraSettings,
     });
     lastShakeEventsRef.current = shakeEvents;
-    const shakeSource = map.getSource("shake-events");
-    if (shakeSource) {
-      shakeSource.setData({
-        type: "FeatureCollection",
-        features: buildShakeEventFeatures(shakeEvents),
-      });
-    }
     onShakeEventsChangeRef.current?.(shakeEvents);
 
     // 震源推定(実験的機能)。ShakeDetectionEngine.processTick()とは別の
