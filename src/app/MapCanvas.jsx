@@ -13,6 +13,7 @@ import { buildMapStyle, loadEpicenterNamesData, loadFaultsData, loadGeoData, loa
 import { BOUNDARY_LINE_COLORS, EEW_FILL_LEGEND_ORDER, INTENSITY_LABEL, STATION_ICON_BASE_RADIUS, STATION_ICON_KEYS, getBoundaryHaloColor, registerAreaIcons, registerStationIcons } from "./stationIcons";
 import { EST_INTENSITY_MIN_INTENSITY_KEYS, QUAKE_INTENSITY_RANK, buildEpicenterCircleColorExpr, buildEpicenterCircleStrokeColorExpr, buildEstIntensityFillColorExpr, buildEstIntensityFillFeatures, buildEstIntensityGridFromImage, buildEstIntensityLineCoords, fetchEstimatedIntensityMatch, loadImageElement, meshCodeToBounds, offsetMeshCode } from "./estIntensity";
 import { EPICENTER_LABEL_CANVAS_SCALE, buildDetectedStationIdSet, buildEpicenterEstimateFeatures, buildShakeEventFeatures, buildTrueEpicenterFeatures, drawEpicenterLabelCanvas, updateEpicenterEstimateLabels } from "./shakeMapLayers";
+import { filterEstimatesNearEew } from "./eewEstimateFilter";
 import { findAreaCodesByName, findEpicenterNameByPoint, findNearestTsunamiAreaWithDistance } from "./geo";
 import { EEW_P_WAVE_SPEED_KM_S, EEW_S_WAVE_SPEED_KM_S, eewCirclePolygon, eewWaveSurfaceRadiusKm } from "./liveFeeds";
 import { aggregateByArea } from "./stations";
@@ -1223,6 +1224,9 @@ export function MapCanvas({
   // 震源推定の最新結果(Map<eventId, result>)。P波・S波到達円のアニメーション
   // (requestAnimationFrameで独立に回る、下方のuseEffect)がここを参照する。
   const lastEpicenterEstimatesRef = useRef(new Map());
+  // 最新のeews(震源推定の表示抑制と、EEWのP/S波円アニメーションが参照する)
+  const eewsRef = useRef(eews);
+  eewsRef.current = eews;
 
   // 震源推定(epicenterEstimation.ts)本体。ShakeDetectionEngineと同様、
   // 一度だけ生成して使い回す(イベントごとの推定キャッシュを内部に持つため)。
@@ -1499,7 +1503,11 @@ export function MapCanvas({
       const estimates = shakeEvents.length > 0
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, engineNow)
         : new Map();
-      lastEpicenterEstimatesRef.current = estimates;
+      // 緊急地震速報(PLUM法を除く)が発表中の地震は、EEWの震源付近の推定を表示しない。
+      // 推定そのものと、下のエンジンへのフィードバック(setExternalEstimates)は
+      // 抑制せず、表示・コールバック・P/S波円・マーカータップにだけ絞り込み後を使う。
+      const displayEstimates = filterEstimatesNearEew(estimates, eewsRef.current);
+      lastEpicenterEstimatesRef.current = displayEstimates;
       // 【対策C: 検知が分散してしまう問題】epicenterEstimation.tsのより
       // 精度の高い推定結果(グリッド探索+振幅較正)を、shakeDetection.ts
       // 側のイベント統合判定(canEventsMerge)へフィードバックする。次回の
@@ -1513,15 +1521,15 @@ export function MapCanvas({
       // 登録してもそのシンボルを自動的には拾い直さないことがある。画像の
       // 登録(updateEpicenterEstimateLabels)を先に済ませてから、それを
       // 参照するsetDataを呼ぶ順序に変更した。
-      updateEpicenterEstimateLabels(map, estimates, epicenterLabelCacheRef);
+      updateEpicenterEstimateLabels(map, displayEstimates, epicenterLabelCacheRef);
       const epicenterSource = map.getSource("epicenter-estimates");
       if (epicenterSource) {
         epicenterSource.setData({
           type: "FeatureCollection",
-          features: buildEpicenterEstimateFeatures(estimates),
+          features: buildEpicenterEstimateFeatures(displayEstimates),
         });
       }
-      onEpicenterEstimateChangeRef.current?.(estimates);
+      onEpicenterEstimateChangeRef.current?.(displayEstimates);
     } else {
       // 機能自体がOFFの間は、P波/S波到達円アニメーション用の参照も
       // 空にしておく(レイヤー自体は非表示だが、念のため古いデータを
@@ -1543,8 +1551,6 @@ export function MapCanvas({
   // 経過時間から円を滑らかに広げるにはrequestAnimationFrameで独自に回す必要がある。
   // ただしGeoJSONのsetDataは決して軽くないので、フレームごとではなく
   // 約180ms間隔に間引いて呼び出す(タブが非表示の間は自動的に止まる)。
-  const eewsRef = useRef(eews);
-  eewsRef.current = eews;
   useEffect(() => {
     const map = mapRef.current;
     if (!map || status !== "ready") return;
