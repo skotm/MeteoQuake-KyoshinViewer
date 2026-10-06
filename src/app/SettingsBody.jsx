@@ -6,6 +6,7 @@ import { SETTINGS_ITEMS, SETTINGS_MENU, SettingsCard, SettingsCardDivider, Setti
 import { APP_VERSION } from "./consent";
 import { BoundaryLineColorSettings, LicenseFileCard, LogViewerPanel, MarkdownFileCard, QuakeColorSchemeSettings, QuakeFetchLimitSettings, StationListDisplayModeSettings } from "./settingsPanels";
 import { EewTestBroadcastPanel, QuakeTestBroadcastPanel, ShakeDetectionTestPanel, TsunamiTestBroadcastPanel } from "./testPanels";
+import { DEFAULT_CAMERA_SETTINGS } from "./settingsStorage";
 
 
 
@@ -26,7 +27,7 @@ export function SettingsBody({
   replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
-  cameraSettings, onChangeCameraSettings,
+  cameraSettings = DEFAULT_CAMERA_SETTINGS, onChangeCameraSettings = () => {},
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
   eewTestForm, eewEpicenterPickActive,

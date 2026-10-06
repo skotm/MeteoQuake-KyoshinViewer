@@ -2576,8 +2576,6 @@ export default function App() {
                   onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
-              cameraSettings={cameraSettings}
-              onChangeCameraSettings={handleChangeCameraSettings}
                   cameraSettings={cameraSettings}
                   onChangeCameraSettings={handleChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
@@ -2692,6 +2690,8 @@ export default function App() {
               onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
               shakeDetectionEnabled={shakeDetectionEnabled}
               onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+              cameraSettings={cameraSettings}
+              onChangeCameraSettings={handleChangeCameraSettings}
               epicenterEstimationEnabled={epicenterEstimationEnabled}
               onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
               shakeEvents={shakeEvents}
