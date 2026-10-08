@@ -36,15 +36,16 @@ export function pickEewsToFocus<T extends EewForFocus>(eews: T[] | null | undefi
 }
 
 // ── 揺れ検知(shakeDetection.ts)のイベント ──────────────────────────────
-// 揺れ検知では、確定したイベントを1つ選んで「追従」する。追従中は、イベントの観測点が
-// 増えて画面の端からはみ出しそうになったら、視点を調整する(MapCanvas.jsx)。
-//  - 追従先は、確定済み(confirmed)で観測点の位置(detections)があるイベント。
-//  - 追従中のイベントが残っている間は、別のイベントが現れても乗り換えない
-//    (大きな地震で同じ地震が複数のイベントに分かれても、視点がふらつかない)。
-//  - 追従中のイベントが無くなった(統合されて消えた/期限切れ)時は、その時点で最も大きい
-//    確定イベントに乗り換える。確定イベントが1つも無くなれば追従を終える。次に確定した
-//    イベントは「最初の検知」として改めて視点移動の対象になる(以前は直前の移動から
-//    60秒以内だと動かず、リプレイや検知テストのやり直しで視点が動かない原因になっていた)。
+// 揺れ検知では、確定したイベント(confirmed)の観測点を全部まとめて「追従」する
+// (pickShakeFollowPoints)。離れた場所で別々の地震が起きた時に、片方だけにズームして
+// もう片方が画面の外に出てしまわないよう、確定している全イベントの観測点が
+// 画面に収まるように視点を合わせる。追従中は、観測点が増えたり、別の場所のイベントが
+// 確定したりして、観測点が画面の端からはみ出しそうになったら、視点を調整する
+// (shakeCameraFollow.js)。確定イベントが1つも無くなれば追従を終え、次に確定した
+// イベントは「最初の検知」として改めて視点移動の対象になる。
+//
+// pickShakeFollowTarget は、以前の「確定イベントを1つ選んで追従する」方式の選び方で、
+// 今は使っていない(外部のテスト等から参照されていても壊れないよう残してある)。
 export type ShakeEventForFollow = {
   id: number;
   confirmed?: boolean;
@@ -62,4 +63,16 @@ export function pickShakeFollowTarget<T extends ShakeEventForFollow>(
   if (current) return { target: current, switched: false };
   const target = confirmed.reduce((a, b) => ((b.pointCount ?? 0) > (a.pointCount ?? 0) ? b : a));
   return { target, switched: true };
+}
+
+// 確定済み(confirmed)で観測点の位置(detections)があるイベントを全部集めて、
+// その観測点をまとめて返す。active=false は、追従するイベントが無いこと。
+export function pickShakeFollowPoints<T extends ShakeEventForFollow>(
+  events: T[] | null | undefined,
+): { active: boolean; points: { lat: number; lon: number }[] } {
+  const confirmed = (events || []).filter(e => e.confirmed && Array.isArray(e.detections) && e.detections.length > 0);
+  if (confirmed.length === 0) return { active: false, points: [] };
+  const points: { lat: number; lon: number }[] = [];
+  for (const e of confirmed) for (const d of e.detections!) points.push(d);
+  return { active: true, points };
 }
