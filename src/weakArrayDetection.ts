@@ -43,7 +43,7 @@ export const DEFAULT_WEAK_ARRAY_PARAMS = {
   historyLength: 45,       // 観測点ごとに保持する直近のtick数(1Hz想定で45秒分)
   baselineFromTicksAgo: 40, // 静穏時の基準値(中央値)に使う範囲: 40tick前〜
   baselineToTicksAgo: 10,   //                                  10tick前
-  minRise: 0.6,            // 基準値からの上昇量の下限
+  minRise: 0.45,           // 基準値からの上昇量の下限(0.6→0.45。無感地震のP波の立ち上がりを1秒早く拾う。検証: replay 5秒→4秒)
   sigmaK: 5,               // 基準値の揺らぎ(MAD)のこの倍数も超えること
   madFloor: 0.1,           // 揺らぎ(MAD)の下限(値が張り付いている観測点では0になるため)
   cooldownSec: 30,         // 一度トリガーした観測点が、再びトリガーできるまでの時間
@@ -60,7 +60,7 @@ export const DEFAULT_WEAK_ARRAY_PARAMS = {
   minStations: 5,          // 候補にする、一致する観測点数の下限(判定は、下のスコアで行う)
   topCandidates: 30,       // 一致数の多い順に、スコアを計算する震源候補の数
   arriveDelaySec: 2,       // P波の予測到達から、この秒数が過ぎた観測点を「届いているはず」とみなす
-  scoreThreshold: 13,      // 検知とみなすスコア(−log10(偶然の確率))の下限
+  scoreThreshold: 15,      // 検知とみなすスコア(−log10(偶然の確率))の下限(13→15。minRiseを下げた分の誤検知(静穏時の最大13.2)を抑える)
   baseRateFloor: 2e-4,     // 偶然に反応する確率(1観測点・3秒の幅あたり)の下限
 };
 
@@ -163,6 +163,27 @@ export class WeakArrayDetector {
     this.lastSeenSec = new Float64Array(n).fill(-1e12);
     this.scratch = new Float32Array(len);
     this.buildGrid();
+  }
+
+  /**
+   * 履歴を、与えられた値で埋めて「静穏が続いていた」状態にする。起動・再接続・リプレイの頭出し・
+   * データ源の切替の直後でも、45tickの履歴が溜まるのを待たずに検知できるようにする
+   * (履歴が足りない間は検知できず、直後の無感地震が通常ルールの数秒後まで検知できなかった)。
+   * 揺れの最中に呼ぶと基準値が高めになるが、検知が遅れる方向にしか働かない。
+   */
+  seed(nowSec: number, values: Map<number | string, number>) {
+    const len = this.params.historyLength;
+    for (const [id, v] of values) {
+      if (v == null || !Number.isFinite(v)) continue;
+      const i = this.idToIdx.get(id);
+      if (i == null) continue;
+      for (let k = 0; k < len; k++) {
+        this.ringVal[i][k] = v;
+        this.ringSec[i][k] = nowSec - (len - k);
+      }
+      this.ringHead[i] = 0;
+      this.ringCount[i] = len;
+    }
   }
 
   reset() {
