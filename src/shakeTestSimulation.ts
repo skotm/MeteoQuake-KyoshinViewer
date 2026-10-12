@@ -125,6 +125,13 @@ export function prepareShakeTest(quake, stations) {
     const distKm = haversineKm(lat, lon, s.lat, s.lon);
     const distHypoKm = Math.sqrt(distKm * distKm + depth * depth);
     const peak = calcPeakIntensity(magnitude, depth, distHypoKm);
+    // 【弱い地震の不具合の修正】最終的な震度(peak)が平常値(BASELINE_INTENSITY)以下の
+    // 観測点は、実際には揺れが届いても観測値は変わらない。以前は、この観測点にも
+    // 「P波到達で peak*0.25 まで上げる」処理を掛けていたため、peakが負の遠方の観測点が、
+    // 平常値(-3.0)より高い値(例: peak=-6 → -1.5)まで上がってしまい、弱い地震
+    // (M2.5以下)のテストで、全国の観測点が同時に「上昇」して、全国規模の検知になっていた。
+    // 揺れが届かない観測点は、データなし(観測値が変わらない)として扱う。
+    if (peak <= BASELINE_INTENSITY) continue;
     const pArrivalMs = travelTimeMs(distKm, depth, P_WAVE_SPEED_KM_S);
     const sArrivalMs = travelTimeMs(distKm, depth, S_WAVE_SPEED_KM_S);
     perStation.set(s.id, { peak, pArrivalMs, sArrivalMs });
@@ -141,17 +148,21 @@ export function computeShakeTestValues(perStation, elapsedMs) {
   const values = new Map();
   for (const [id, st] of perStation) {
     if (elapsedMs < st.pArrivalMs) continue;
+    // P波の段階で到達するレベル。peakが0以上なら従来どおりpeakの25%。peakが負(平常値より
+    // わずかに高い程度の弱い揺れ)の場合は、peak*0.25ではpeakを上回ってしまうので、
+    // peakそのものにする(P波の段階でpeakを超えない)。
+    const pLevel = st.peak >= 0 ? st.peak * P_WAVE_RATIO : st.peak;
     let value;
     if (elapsedMs < st.sArrivalMs) {
       // P波到達後・S波到達前 — 弱い初期微動
       const t = (elapsedMs - st.pArrivalMs) / Math.max(1, st.sArrivalMs - st.pArrivalMs);
-      value = BASELINE_INTENSITY + (st.peak * P_WAVE_RATIO - BASELINE_INTENSITY) * t;
+      value = BASELINE_INTENSITY + (pLevel - BASELINE_INTENSITY) * t;
     } else {
       const sinceS = elapsedMs - st.sArrivalMs;
       if (sinceS < RISE_DURATION_MS) {
         // S波到達後、ピークまで立ち上がる
         const t = sinceS / RISE_DURATION_MS;
-        value = st.peak * P_WAVE_RATIO + (st.peak - st.peak * P_WAVE_RATIO) * t;
+        value = pLevel + (st.peak - pLevel) * t;
       } else if (sinceS < RISE_DURATION_MS + HOLD_DURATION_MS) {
         // その地点の最高震度を一定時間そのまま保つ
         value = st.peak;

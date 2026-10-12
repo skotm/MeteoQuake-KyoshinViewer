@@ -167,6 +167,52 @@ export function saveEpicenterEstimationEnabled(enabled) {
 }
 
 /* ─────────────────────────────────────────────────────
+   微弱な揺れの検知(配列型。shakeDetection.tsのステップ3c)を使うか。
+   リアルタイムタブの設定。デフォルトはON。実機で誤検知が出た場合に、切れるようにしてある。
+   ───────────────────────────────────────────────────── */
+const WEAK_ARRAY_DETECTION_STORAGE_KEY = "weakArrayDetectionEnabled";
+
+export function loadStoredWeakArrayDetectionEnabled() {
+  try {
+    return localStorage.getItem(WEAK_ARRAY_DETECTION_STORAGE_KEY) !== "false";
+  } catch (err) {
+    console.warn("微弱検知の設定を読み込めませんでした:", err);
+  }
+  return true;
+}
+
+export function saveWeakArrayDetectionEnabled(enabled) {
+  try {
+    localStorage.setItem(WEAK_ARRAY_DETECTION_STORAGE_KEY, String(enabled));
+  } catch (err) {
+    console.warn("微弱検知の設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
+   信頼度が下限未満の震源推定も表示するか。リアルタイムタブの設定。
+   デフォルトはOFF(信頼度が低い推定は表示しない)。
+   ───────────────────────────────────────────────────── */
+const SHOW_LOW_CONFIDENCE_ESTIMATES_STORAGE_KEY = "showLowConfidenceEstimates";
+
+export function loadStoredShowLowConfidenceEstimates() {
+  try {
+    return localStorage.getItem(SHOW_LOW_CONFIDENCE_ESTIMATES_STORAGE_KEY) === "true";
+  } catch (err) {
+    console.warn("信頼度の低い推定の表示設定を読み込めませんでした:", err);
+  }
+  return false;
+}
+
+export function saveShowLowConfidenceEstimates(enabled) {
+  try {
+    localStorage.setItem(SHOW_LOW_CONFIDENCE_ESTIMATES_STORAGE_KEY, String(enabled));
+  } catch (err) {
+    console.warn("信頼度の低い推定の表示設定を保存できませんでした:", err);
+  }
+}
+
+/* ─────────────────────────────────────────────────────
    細分区域(気象庁の細分区域単位)を震度の色で塗りつぶすかどうかの設定。
    推計震度分布と同様、localStorageに保存し次回起動時も覚えておく。
    デフォルトはON(従来どおりの見た目を維持する)。

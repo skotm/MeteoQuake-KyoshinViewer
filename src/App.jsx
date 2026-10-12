@@ -10,7 +10,7 @@ import { Filters, LAYERS } from "./app/navigation";
 import { useIsStandalonePwa, useIsWideLayout, useWideUIScale } from "./app/layoutHooks";
 import { Glass, GlassOpaqueContext, PressableButton, detectSuspectedBackdropFilterBreakage, loadGlassOpaqueOverride, saveGlassOpaqueOverride } from "./app/glass";
 import { THEME_TOKENS, ThemeContext, loadStoredThemeModePref, saveThemeModePref, useSystemThemeMode } from "./app/theme";
-import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveStationListDisplayMode, loadStoredCameraSettings, saveCameraSettings } from "./app/settingsStorage";
+import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredShowLowConfidenceEstimates, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredWeakArrayDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveShowLowConfidenceEstimates, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveWeakArrayDetectionEnabled, saveStationListDisplayMode, loadStoredCameraSettings, saveCameraSettings } from "./app/settingsStorage";
 import { EEW_CANCEL_LINGER_MS, EEW_MAX_CONCURRENT, EEW_STALE_MS, connectQuakeWebSocket, connectWolfxEewWebSocket, fetchLatestFreshEew, fetchLatestFreshEewFromWolfx } from "./app/liveFeeds";
 import { loadGeoData, loadTsunamiAreasData } from "./app/mapDataLoaders";
 import { buildTestQuakeStageCard, calcTestEewAreasByAttenuation, isTestWarnLevel } from "./app/testSimulation";
@@ -253,6 +253,14 @@ export default function App() {
     });
   }
 
+  // 配列型の微弱検知(ごく弱い揺れの検知)を使うか。リアルタイムタブの設定。デフォルトON。
+  const [weakArrayDetectionEnabled, setWeakArrayDetectionEnabledState] = useState(loadStoredWeakArrayDetectionEnabled);
+
+  function handleChangeWeakArrayDetectionEnabled(next) {
+    setWeakArrayDetectionEnabledState(next);
+    saveWeakArrayDetectionEnabled(next);
+  }
+
   function handleChangeShakeDetectionEnabled(next) {
     setShakeDetectionEnabledState(next);
     saveShakeDetectionEnabled(next);
@@ -262,6 +270,14 @@ export default function App() {
   // 震源推定(epicenterEstimation.ts、実験的機能)自体のON/OFF。地震検知と
   // 同じ設定タブで操作し、localStorageに永続化する。デフォルトOFF。
   const [epicenterEstimationEnabled, setEpicenterEstimationEnabledState] = useState(loadStoredEpicenterEstimationEnabled);
+
+  // 信頼度が下限未満の震源推定も表示するか。リアルタイムタブの設定。デフォルトOFF。
+  const [showLowConfidenceEstimates, setShowLowConfidenceEstimatesState] = useState(loadStoredShowLowConfidenceEstimates);
+
+  function handleChangeShowLowConfidenceEstimates(next) {
+    setShowLowConfidenceEstimatesState(next);
+    saveShowLowConfidenceEstimates(next);
+  }
 
   function handleChangeEpicenterEstimationEnabled(next) {
     setEpicenterEstimationEnabledState(next);
@@ -2274,9 +2290,11 @@ export default function App() {
           replayPlaying={replayPlayer.isPlaying}
           replayDataTimeMs={replayPlayer.loaded ? (replayPlayer.frames[replayPlayer.currentIndex]?.dataTime?.getTime() ?? null) : null}
           shakeDetectionEnabled={shakeDetectionEnabled}
+          weakArrayDetectionEnabled={weakArrayDetectionEnabled}
           cameraSettings={cameraSettings}
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
+          showLowConfidenceEstimates={showLowConfidenceEstimates}
           onEpicenterEstimateChange={setEpicenterEstimates}
           shakeTestTrueEpicenters={shakeTestTrueEpicenters}
         />
@@ -2576,10 +2594,14 @@ export default function App() {
                   onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+                  weakArrayDetectionEnabled={weakArrayDetectionEnabled}
+                  onChangeWeakArrayDetectionEnabled={handleChangeWeakArrayDetectionEnabled}
                   cameraSettings={cameraSettings}
                   onChangeCameraSettings={handleChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
+                  showLowConfidenceEstimates={showLowConfidenceEstimates}
+                  onChangeShowLowConfidenceEstimates={handleChangeShowLowConfidenceEstimates}
                   shakeEvents={shakeEvents}
                   realtimeDataTime={realtimeDataTimeForMap}
                   testTsunami={testTsunami}
@@ -2690,10 +2712,14 @@ export default function App() {
               onChangeReplayJmaColorEnabled={handleChangeReplayJmaColorEnabled}
               shakeDetectionEnabled={shakeDetectionEnabled}
               onChangeShakeDetectionEnabled={handleChangeShakeDetectionEnabled}
+              weakArrayDetectionEnabled={weakArrayDetectionEnabled}
+              onChangeWeakArrayDetectionEnabled={handleChangeWeakArrayDetectionEnabled}
               cameraSettings={cameraSettings}
               onChangeCameraSettings={handleChangeCameraSettings}
               epicenterEstimationEnabled={epicenterEstimationEnabled}
               onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
+              showLowConfidenceEstimates={showLowConfidenceEstimates}
+              onChangeShowLowConfidenceEstimates={handleChangeShowLowConfidenceEstimates}
               shakeEvents={shakeEvents}
               realtimeDataTime={realtimeDataTimeForMap}
               testTsunami={testTsunami}

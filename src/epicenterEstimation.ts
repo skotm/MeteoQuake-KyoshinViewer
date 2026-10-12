@@ -179,6 +179,7 @@
 import { P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S, calcPeakIntensity } from "./shakeTestSimulation";
 import { getStationTerritories } from "./stationTerritory";
 import { getJmaTravelTimeTable, lookupJmaTravelTime } from "./jmaTravelTime";
+import { computeEstimateConfidence, relativeSizeFactor } from "./epicenterConfidence";
 
 // 仮震源の初期値
 const INITIAL_DEPTH_KM = 10;
@@ -279,9 +280,22 @@ const CALIBRATION_MAGNITUDE_CANDIDATES = [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0
 // 選ばれた1つの候補震源についてだけ、ユーザーへ表示する推定マグニチュード
 // を求める際は、探索コストを気にする必要が無い(1回しか呼ばない)ため、
 // より細かい0.1刻みの候補で評価し直す。
+// 【表示する推定Mの範囲】3.0〜8.0(0.1刻み)。この範囲は変えない方針(ユーザーの判断)。
+// 範囲の端に張り付いたときは、その値そのものではなく「それ以下/以上」を意味する。
+//  - 下限(M3.0): 弱い地震(M3.0以下)。表示側で、下向きの二重シェブロン(▼▼)を描く。
+//  - 上限(M8.0): 大規模な地震(M8.0以上)。表示側で、上向きの二重シェブロン(▲▲)を描く。
+//  (magnitudeBound。shakeMapLayers.jsのmagnitudeArrowDirection・drawEpicenterLabelCanvas参照)
+// 【参考: 範囲を広げて試した結果】リアルタイムのリプレイ(実データ)で、探索範囲を
+// 0.0〜10.0に広げて、気象庁のMと比べた。東北沖(M9.0)は8.0で頭打ちになり、広げると8.3に
+// なった。弱い地震(熊本M2.2・長野M2.8・福島県沖M4.5)は、広げると0.7・1.1・1.8と、気象庁の
+// Mより1.5〜2.7低くなった(使っている減衰式の司・翠川1999は、M5.8未満では適用範囲外)。
+// 下限で頭打ちにした値(3.0)の方が気象庁のMに近い(3地震の平均絶対誤差は、下限3.0で
+// 0.83、2.0で1.17、下限なしで1.97)ので、下限は3.0のままが妥当。
+const MAGNITUDE_MIN = 3.0;
+const MAGNITUDE_MAX = 8.0;
 const FINAL_MAGNITUDE_CANDIDATES = (() => {
   const arr = [];
-  for (let m = 3.0; m <= 8.0 + 1e-9; m += 0.1) arr.push(Math.round(m * 10) / 10);
+  for (let m = MAGNITUDE_MIN; m <= MAGNITUDE_MAX + 1e-9; m += 0.1) arr.push(Math.round(m * 10) / 10);
   return arr;
 })();
 
@@ -917,6 +931,25 @@ function computeSpTimePenalty(candidate, detections, detectionWeightById, penalt
   return penalty * SP_TIME_PENALTY_WEIGHT * penaltyMultiplier;
 }
 
+// 最終的に選ばれた震源(candidate)での、到達時刻だけの誤差。各観測点の
+// 「検知時刻 - (発生時刻 + 走時)」の、重み付きRMS(ミリ秒)。発生時刻は
+// computeErrorLevelと同じ重み付き平均を使う。信頼度(epicenterConfidence.ts)用。
+function computeTimeResidualRmsMs(candidate, detections, detectionWeightById) {
+  const origin = computeWeightedOriginTime(candidate, detections, detectionWeightById);
+  if (origin == null) return null;
+  let sumW = 0;
+  let sumSq = 0;
+  for (const d of detections) {
+    const w = detectionWeightById.get(d.id) ?? 0;
+    if (w <= 0) continue;
+    const distKm = haversineKm(candidate.lat, candidate.lon, d.lat, d.lon);
+    const diff = (d.detectedAt - travelTimeMs(distKm, candidate.depthKm)) - origin;
+    sumW += w;
+    sumSq += w * diff * diff;
+  }
+  return sumW > 0 ? Math.sqrt(sumSq / sumW) : null;
+}
+
 /**
  * 候補震源の誤差レベルを計算する(小さいほど実際の震源に近い)。
  * 到達時刻の分散に加え、震度較正ペナルティ・着未着法も含むフルコスト版。
@@ -1255,6 +1288,29 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
     errorLevel: fineBest.error,
     pointCount: detections.length,
     uniquenessConfirmed,
+    // 信頼度(epicenterConfidence.ts)の材料の1つ。観測点が一方向に偏っているほど大きい。
+    azimuthalGapDeg: computeAzimuthalGapDeg(best.lat, best.lon, estimationDetections),
+    // 信頼度の材料。errorLevelは、実際に推定に使った観測点(最大MAX_STATIONS_FOR_
+    // ESTIMATION点)の誤差の合計なので、1点あたりの誤差は、全検知点数(pointCount)
+    // ではなくこちらで割る必要がある。
+    estimationPointCount: estimationDetections.length,
+    // 到達時刻だけの誤差(重み付きRMS、ミリ秒)。errorLevelには、震度の較正や
+    // S-P時間のペナルティなども混ざっていて、到達時刻の合い具合を表す値としては
+    // 使えない(実データのリプレイで、位置が合っていてもRMS換算で1〜5秒になった)。
+    timeRmsMs: computeTimeResidualRmsMs(best, estimationDetections, detectionWeightById),
+    // 深さの探索上限(null=上限なし)。深さが上限に近いほど、解が信頼できない。
+    depthLimitKm: maxDepthAllowed,
+    // 推定Mが探索範囲の端(下限3.0・上限8.0)に張り付いているか。端に張り付いた
+    // 値は「その値」ではなく「それ以下/以上」という意味にしかならない。
+    // 'low': 下限(MAGNITUDE_MIN)に張り付いている(=M3.0以下) / 'high': 上限に張り付いている
+    // (=M8.0以上の大規模な地震) / null: 範囲の内側(または推定なし)
+    magnitudeBound: magnitudeFit
+      ? (magnitudeFit.magnitude <= MAGNITUDE_MIN + 1e-9 ? 'low'
+        : magnitudeFit.magnitude >= MAGNITUDE_MAX - 1e-9 ? 'high' : null)
+      : null,
+    magnitudeAtBound: magnitudeFit
+      ? (magnitudeFit.magnitude <= MAGNITUDE_MIN + 1e-9 || magnitudeFit.magnitude >= MAGNITUDE_MAX - 1e-9)
+      : false,
     magnitude: magnitudeFit ? magnitudeFit.magnitude : null,
   };
 }
@@ -1309,6 +1365,10 @@ export class EpicenterEstimator {
           stablePos: entry?.stablePos ?? null,
           stableDepthKm: entry?.stableDepthKm ?? null,
           firstStableAt: entry?.firstStableAt ?? now,
+          // 一意性が○になった時刻。点数が増えるたびにentryは作り直されるので、
+          // 引き継がないと、位置が動いていなくても毎回0に戻ってしまう
+          // (実機のログで、信頼度が点数の増えるたびに鋸歯状に下がっていた原因)。
+          uniqueSince: entry?.uniqueSince ?? null,
         };
       }
 
@@ -1332,7 +1392,29 @@ export class EpicenterEstimator {
           stableForMs >= CONVERGENCE_STABLE_MS &&
           result.pointCount >= MIN_CONFIRMED_POINTS &&
           !!result.uniquenessConfirmed;
-        result = { ...result, confirmed, stableForMs };
+        // 解の一意性が○のまま続いている時間。深さが探索上限の手前と上限の間を
+        // 行き来すると、一意性は○と×を繰り返す(上限に張り付くと×になる)ので、
+        // 一瞬○になっただけでは信頼度に反映しないために使う。
+        if (result.uniquenessConfirmed) {
+          if (entry.uniqueSince == null) entry.uniqueSince = now;
+        } else {
+          entry.uniqueSince = null;
+        }
+        const uniqueHoldMs = entry.uniqueSince == null ? 0 : now - entry.uniqueSince;
+        // 信頼度(0.00〜1.00)。位置・深さの安定時間などは毎tick変わるので、キャッシュした
+        // 結果を使い回す場合も、ここで毎回計算し直す。
+        const { confidence, parts } = computeEstimateConfidence({
+          pointCount: result.pointCount,
+          stableForMs,
+          uniquenessConfirmed: !!result.uniquenessConfirmed,
+          uniqueHoldMs,
+          azimuthalGapDeg: result.azimuthalGapDeg,
+          depthKm: result.depthKm,
+          depthLimitKm: result.depthLimitKm,
+          magnitude: result.magnitude,
+          magnitudeAtBound: !!result.magnitudeAtBound,
+        });
+        result = { ...result, confirmed, stableForMs, confidence, confidenceParts: parts };
       }
 
       entry.result = result;
@@ -1342,6 +1424,22 @@ export class EpicenterEstimator {
 
     for (const id of this.cache.keys()) {
       if (!activeIds.has(id)) this.cache.delete(id);
+    }
+
+    // 同時にある最大のイベントより点数が少ない推定は、信頼度を点数の比で割り引く
+    // (epicenterConfidence.tsのrelativeSizeFactor参照)。キャッシュ(entry.result)には
+    // 割り引き前の値を残し、返す結果にだけ反映する(毎tick、最新の点数比で計算し直す)。
+    let maxConcurrentPoints = 0;
+    for (const event of events) maxConcurrentPoints = Math.max(maxConcurrentPoints, event.pointCount ?? 0);
+    for (const [id, r] of results) {
+      if (!r || r.confidence == null) continue;
+      const factor = relativeSizeFactor(r.pointCount, maxConcurrentPoints);
+      if (factor >= 1) continue;
+      results.set(id, {
+        ...r,
+        confidence: Math.round(r.confidence * factor * 100) / 100, // 0.01刻み
+        confidenceParts: { ...r.confidenceParts, relativeFactor: Math.round(factor * 100) / 100 },
+      });
     }
 
     return results;

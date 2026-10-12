@@ -1,4 +1,5 @@
 import { useContext, useEffect } from "react";
+import { ESTIMATE_MIN_DISPLAY_CONFIDENCE } from "../epicenterConfidence";
 import { EMPTY_EQDB_LIST } from "./eqdb";
 import { GlassOpaqueContext } from "./glass";
 import { ThemeContext } from "./theme";
@@ -26,7 +27,9 @@ export function SettingsBody({
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
+  weakArrayDetectionEnabled, onChangeWeakArrayDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
+  showLowConfidenceEstimates, onChangeShowLowConfidenceEstimates,
   cameraSettings = DEFAULT_CAMERA_SETTINGS, onChangeCameraSettings = () => {},
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
   testEews = EMPTY_EQDB_LIST, onTestEewAction,
@@ -243,10 +246,22 @@ export function SettingsBody({
             onChange={() => onChangeShakeDetectionEnabled(!shakeDetectionEnabled)}
           />
           <SettingsToggleRow
+            label="微弱な揺れの検知(実験的機能)"
+            description="震度0未満〜0付近の、ごく弱い揺れ(沖合の無感地震など)を、複数の観測点がP波の伝わる順序で上昇したことから検知します。誤検知が気になる場合は、オフにしてください。「地震検知」がONの間のみ動作します。"
+            checked={weakArrayDetectionEnabled}
+            onChange={() => onChangeWeakArrayDetectionEnabled(!weakArrayDetectionEnabled)}
+          />
+          <SettingsToggleRow
             label="震源推定(実験的機能)"
             description="緊急地震速報が出ない小さな地震でも、地震検知の結果から震央のおおよその位置を推定して地図上に×印で表示します。検知点数が少ないうちは精度が低く、位置が大きくぶれることがあります。「地震検知」がONの間のみ動作します。"
             checked={epicenterEstimationEnabled}
             onChange={() => onChangeEpicenterEstimationEnabled(!epicenterEstimationEnabled)}
+          />
+          <SettingsToggleRow
+            label="信頼度の低い推定を表示"
+            description={`震源推定の信頼度(推定Mの右に表示される0.00〜1.00の数値)が${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定も表示します。オフの間は、${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定を表示しません。「震源推定」がONの間のみ動作します。`}
+            checked={showLowConfidenceEstimates}
+            onChange={() => onChangeShowLowConfidenceEstimates(!showLowConfidenceEstimates)}
           />
           <SettingsToggleRow
             label="震度上昇中を表示"
