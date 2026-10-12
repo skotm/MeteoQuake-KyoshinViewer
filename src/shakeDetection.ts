@@ -260,6 +260,15 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
                                     // (ルール5のminOwnIntensityに合わせる)
   tickIntervalSeconds: 1,      // 1tickが何秒に相当するか(実データの更新間隔)
 
+  // 【疎な観測点の近傍拡張】25km以内の近傍が少ない観測点(離島・海岸・山間部。全1628点のうち、
+  // 0点が21、1〜2点が109)は、近傍の裏付けが取れず、孤立扱い(震度1.0以上か1秒で+1.2が必要)か、
+  // 1〜2点の少数の裏付けになっていた。近傍がsparseNeighborMin点未満の観測点に限り、
+  // sparseNeighborRadiusKm以内の近い順(最大maxNeighbors点)を、detectionRulesの裏付けに使う
+  // (BFS拡張・クラスタ判定・孤立点の単独判定は従来のまま)。
+  sparseNeighborEnabled: true,
+  sparseNeighborMin: 3,
+  sparseNeighborRadiusKm: 60,
+
   // 【配列型の微弱検知(weakArrayDetection.ts)】震度0未満〜0付近の、ごく弱い揺れ
   // (沖合の無感地震など)を、P波の伝播順序に合う観測点の立ち上がりの組み合わせとして
   // 検知する経路(ステップ3c)。既存の検知ルールは、観測点の値(震度の絶対値)や
@@ -402,6 +411,28 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   propagationRiseThreshold: 0.15, // これ以上の上昇があれば、単独では検知の
                                    // 裏付けにならなくても既存イベントへの
                                    // 取り込み(拡張)は許可する
+  // 【検知点が少ない問題】BFS拡張の取り込み判定を、「そのtickの瞬間diff」だけでなく、
+  // 直近10秒の最大上昇速度(riseRateMax10s)でも見る。以前は、隣の点がイベントに加わるより先に
+  // 立ち上がった観測点は、その時のdiffが過ぎた後は、二度と取り込まれなかった。
+  // また、伝播速度のチェックを、「今のtick」ではなく、両点の反応開始時刻の差で行い、同時に近い反応も
+  // 許容する(以前は、距離/8〜距離/5.5秒の狭い窓の外の観測点は取り込まれなかった)。
+  propagationUseRecentRise: true,
+  propagationTimingMarginSec: 3,  // 反応開始の時刻差の許容(秒)。|差| <= 距離/pWaveMinSpeedKmS + この値
+  // 【検知点が少ない問題】走時による取り込み(ステップ6b)。震源推定(epicenterEstimation.ts)の
+  // 位置・発震時刻から計算したP波の到達時刻に、反応の開始時刻が合う観測点を、25km以内の近傍が
+  // 検知済みかどうかに関係なく、そのイベントへ取り込む。揺れが弱く、観測点が離れた地域
+  // (北海道東部など)で、震度0.1未満の弱い反応の観測点が、近傍の連鎖が切れて取り残されていた。
+  gapFillEnabled: true,          // 更新間隔が空いた時、間のtickを補間して進める(processTick参照)
+  gapFillMinMs: 1500,
+  gapFillMaxMs: 6000,
+  travelAbsorbEnabled: true,
+  travelAbsorbMinPoints: 8,      // イベントがこの点数以上(推定が安定してから)で使う
+  travelAbsorbMaxKm: 250,        // 震央からこの距離以内
+  travelAbsorbGrowKm: 30,        // さらに、イベントの現在の広がり(震央から最も遠い検知点)+この距離以内。小さな地震で、遠方のノイズを取り込まないため
+  travelAbsorbEarlySec: 3,       // P波の予測到達より、これだけ早い反応まで許容(秒)
+  travelAbsorbLateSec: 6,        // P波の予測到達より、これだけ遅い反応まで許容(秒)
+  travelAbsorbMinRise: 0.4,      // 直近10秒の最大上昇速度の下限(ノイズの偶然の一致を減らす)
+  travelAbsorbMaxAgeSec: 25,     // 反応の開始から、これ以内の点だけ
   propagationMaxRadiusKm: 60,     // イベントの発生起点(最初に加わった点)から
                                    // これより離れた点へは拡張しない。上限が
                                    // 無いと、途中の弱いノイズや別の遠方の揺れを
@@ -502,7 +533,12 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   mergeTravelTimeUnconfirmedMinPoints: 100, // 推定が未収束でも、主イベントがこの点数以上なら使う
   mergeTravelTimeInWindowRatio: 0.7, // 副イベントの観測点のうち、これ以上の割合が「P波〜S波」の窓に入れば統合
   mergeSurfaceWaveMinMagnitude: 6.5, // 主イベントの推定がこのM以上なら、窓の終わりを表面波の到達まで延ばす
-  mergeSurfaceWaveSpeedKmS: 3.0,     // 表面波の速度の目安(km/s)
+  mergeSurfaceWaveSpeedKmS: 2.5,     // 表面波の速度の目安(km/s)。3.0だと、M7.5青森県東方沖で400km離れた北海道北部の観測点群(P波の約100秒後に検知)が窓から外れ、別イベントに分裂した
+  mergeCodaEnabled: true,            // 大きな地震の後続動(coda)で遠方に出る小さなイベントを、主イベントへ統合する
+  mergeCodaMinMagnitude: 6.5,        // 主イベントの推定がこのM以上
+  mergeCodaMaxPoints: 20,            // 副イベントがこの点数以下(小さい)
+  mergeCodaMaxSinceOriginSec: 900,   // 発震時刻からこの時間以内
+  mergeCodaMarginKm: 60,             // 主イベントの検知範囲(震央から最も遠い検知点)にこの余裕を足した範囲内
 };
 
 // 2点間の距離(km, 簡易haversine)
@@ -817,7 +853,25 @@ function canEventBeMergedByTravelTime(main, other, estMain, params) {
     }
     if (lagSec >= -params.mergeTravelTimeEarlySec && lagSec <= lateLimitSec) inWindow++;
   }
-  return inWindow / dets.length >= params.mergeTravelTimeInWindowRatio;
+  if (inWindow / dets.length >= params.mergeTravelTimeInWindowRatio) return true;
+  // 【対策: 大きな地震の後続動で遠方に分裂イベントが出る問題】M6.5以上の地震では、遠方で
+  // P波〜表面波の窓を過ぎた後の揺れ(coda・長周期)でも、観測点が反応して小さなイベントが
+  // 出る(M7.5青森県東方沖: 震央から300〜480km、P波の100〜190秒後)。主イベントの検知範囲の
+  // 内側で、発震から一定時間内の小さな副イベントは、別の地震である可能性より、同じ地震の
+  // 後続動である可能性が高いので統合する。
+  if (params.mergeCodaEnabled && estMain.magnitude != null && estMain.magnitude >= params.mergeCodaMinMagnitude
+      && other.pointCount <= params.mergeCodaMaxPoints && estMain.lat != null) {
+    let latest = 0;
+    for (const d of dets) latest = Math.max(latest, d.detectedAt);
+    if ((latest - estMain.originTime) / 1000 <= params.mergeCodaMaxSinceOriginSec) {
+      let radius = 0;
+      for (const d of main.detectionTimes.values()) radius = Math.max(radius, haversineKm(estMain.lat, estMain.lon, d.lat, d.lon));
+      let inside = 0;
+      for (const d of dets) if (haversineKm(estMain.lat, estMain.lon, d.lat, d.lon) <= radius + params.mergeCodaMarginKm) inside++;
+      if (inside / dets.length >= params.mergeTravelTimeInWindowRatio) return true;
+    }
+  }
+  return false;
 }
 
 function canEventsMerge(a, b, params, externalEstimates) {
@@ -999,7 +1053,7 @@ function evaluateDetectionRules(point, points, rules) {
       if (point.riseRateMax10s == null || point.riseRateMax10s < rule.minOwnRiseRateMax10s) continue;
     }
 
-    const candidates = point.nearPoints.slice(0, rule.neighborCount);
+    const candidates = (point.extPoints && point.extPoints.length > 0 ? point.extPoints : point.nearPoints).slice(0, rule.neighborCount);
     if (candidates.length === 0) continue; // 近傍が無い(isolated経路の対象)
 
     const matchedNeighbors = [];
@@ -1203,6 +1257,8 @@ export class ShakeDetectionEngine {
     // イベントが作られてしまう(福島県沖・熊本の実データで、2つ目のイベントが出た)。
     // これを防ぐため、使い終えた観測点を一定時間、探索から除く。
     this.weakUsedUntil = new Map();
+    // 微弱検知の履歴を、最初に渡された値で埋める(WeakArrayDetector.seed)。初期化・切替の直後に立てる。
+    this.weakArrayNeedsSeed = true;
   }
 
   // 【データ源切り替え対策】リアルタイム震度⇔リプレイ・地震検知テストの
@@ -1231,6 +1287,7 @@ export class ShakeDetectionEngine {
       point.lastReactionEndTick = null;
       point.sWaveArrivalAt = null;
       point.broadRiseCandidateSince = null;
+      point.lastOnsetAt = null;
     }
     this.events = new Map();
     this.broadRiseClusters = [];
@@ -1238,6 +1295,9 @@ export class ShakeDetectionEngine {
     this.suppressUntil = now + suppressMs;
     if (this.weakArray) this.weakArray.reset();
     this.weakUsedUntil = new Map();
+    this.weakArrayNeedsSeed = true;
+    this.lastTickNow = null;
+    this.lastTickValues = null;
   }
 
   // 【対策C】App.tsx側でepicenterEstimation.tsのEpicenterEstimatorを実行した
@@ -1252,6 +1312,7 @@ export class ShakeDetectionEngine {
       this.weakArray = null;
     } else if (!this.weakArray && this.initialized) {
       this.weakArray = new WeakArrayDetector([...this.points.values()].map(pt => ({ id: pt.id, lat: pt.lat, lon: pt.lon })), this.params.weakArrayParams);
+      this.weakArrayNeedsSeed = true;
     }
   }
 
@@ -1309,6 +1370,8 @@ export class ShakeDetectionEngine {
         // (computeBroadRiseTimingCorrelation参照)。
         broadRiseCandidateSince: prev ? prev.broadRiseCandidateSince : null,
         nearPoints: [],
+        lastOnsetAt: prev ? prev.lastOnsetAt : null, // 直近の反応開始時刻(反応が止まっても残す。走時による取り込み用)
+        extPoints: [], // 疎な観測点の裏付け用(近傍が少ない時だけ、より遠い近傍を含む)
       });
     }
     for (const s of targetStations) {
@@ -1322,6 +1385,18 @@ export class ShakeDetectionEngine {
       }
       candidates.sort((a, b) => a.distanceKm - b.distanceKm);
       point.nearPoints = candidates.slice(0, maxNeighbors);
+      point.extPoints = [];
+      if (this.params.sparseNeighborEnabled && point.nearPoints.length < this.params.sparseNeighborMin) {
+        const ext = [];
+        for (const other of targetStations) {
+          if (other.id === s.id) continue;
+          const dist = haversineKm(s.lat, s.lon, other.lat, other.lon);
+          if (dist > this.params.sparseNeighborRadiusKm) continue;
+          ext.push({ id: other.id, distanceKm: dist });
+        }
+        ext.sort((a, b) => a.distanceKm - b.distanceKm);
+        point.extPoints = ext.slice(0, maxNeighbors);
+      }
     }
     this.initialized = true;
     // 配列型の微弱検知。観測点の座標が確定したこのタイミングで作る(格子との対応を
@@ -1329,6 +1404,7 @@ export class ShakeDetectionEngine {
     this.weakArray = this.params.weakArrayEnabled
       ? new WeakArrayDetector([...this.points.values()].map(pt => ({ id: pt.id, lat: pt.lat, lon: pt.lon })), this.params.weakArrayParams)
       : null;
+    this.weakArrayNeedsSeed = true;
     // 観測点マスタが変わると古いidを参照したクラスタが残ってしまうため、
     // 広域継続拡大検知の追跡状態もリセットする。
     this.broadRiseClusters = [];
@@ -1336,11 +1412,46 @@ export class ShakeDetectionEngine {
 
   // 1回分のデータ更新を処理し、現在のイベント一覧(確定/未確定含む)を返す。
   // valuesMap: Map<観測点id, 震度相当値>。データが無い観測点はキーごと無し。
+  //
+  // 【対策: 更新間隔が空くと検知・推定が不安定になる問題】エンジンは「1回の呼び出し=1tick(約1秒)」
+  // 前提で、履歴・上昇速度・イベントの寿命などをtick数で数えている。ところが実際には、リプレイの
+  // 高速再生(描画が間に合わず複数フレームを1度に進める)や、配信の一時的な遅れで、前回から2〜数秒
+  // 空いて呼ばれることがある。M7.5青森県東方沖のリプレイで、2〜5フレームおきに間引いて渡すと、
+  // 震源推定が経度で0.7度ほど行き来し、一瞬だけ別イベントが出て消える現象を再現した。
+  // 前回から gapFillMinMs〜gapFillMaxMs 空いた場合は、前回と今回の値を直線補間した値で、間のtickを
+  // 1秒刻みで補って進める(補間はその間の観測点だけ。値が片方にしか無い観測点は補間しない)。
   processTick(valuesMap, now = Date.now()) {
+    const { params } = this;
+    const prevNow = this.lastTickNow, prevVals = this.lastTickValues;
+    this.lastTickNow = now;
+    this.lastTickValues = valuesMap;
+    if (params.gapFillEnabled && prevNow != null && prevVals && this.initialized) {
+      const gap = now - prevNow;
+      if (gap >= params.gapFillMinMs && gap <= params.gapFillMaxMs) {
+        const n = Math.round(gap / 1000);
+        for (let k = 1; k < n; k++) {
+          const r = k / n;
+          const mid = new Map();
+          for (const [id, v1] of valuesMap) {
+            const v0 = prevVals.get(id);
+            mid.set(id, v0 == null ? v1 : v0 + (v1 - v0) * r);
+          }
+          this.processTickCore(mid, prevNow + gap * r);
+        }
+      }
+    }
+    return this.processTickCore(valuesMap, now);
+  }
+
+  processTickCore(valuesMap, now = Date.now()) {
     const { params, points } = this;
     if (!this.initialized) return [];
     this.tickIndex += 1;
     const tick = this.tickIndex;
+    if (this.weakArrayNeedsSeed && this.weakArray) {
+      this.weakArray.seed(now / 1000, valuesMap);
+      this.weakArrayNeedsSeed = false;
+    }
 
     // 1) 値の更新。上昇量は「前tickとの差」に加えて「直近5秒平均との差」も
     //    使うため、上書きする前の値をhistoryに積んでおく。あわせて、直近
@@ -1393,7 +1504,7 @@ export class ShakeDetectionEngine {
         ) {
           point.eventId = null;
         }
-        if (point.reactionStartAt == null) point.reactionStartAt = now;
+        if (point.reactionStartAt == null) { point.reactionStartAt = now; point.lastOnsetAt = now; }
       } else {
         if (point.reactionStartAt != null) point.lastReactionEndTick = tick;
         point.reactionStartAt = null;
@@ -1629,7 +1740,7 @@ export class ShakeDetectionEngine {
       for (const p of points.values()) {
         const ev = p.eventId != null ? this.events.get(p.eventId) : null;
         if (ev) {
-          if (!ev.weakArray) excludeIds.add(p.id); // 通常のイベントに属している点は除く
+          if (!ev.weakArray && p.absorbedEventId !== ev.id) excludeIds.add(p.id); // 通常のイベントに属している点は除く(走時で取り込んだ点は除かない。除くと「届いているはずの点数K」が減り、スコアが膨らむ)
           continue; // 微弱検知のイベントに属している点は、そのイベントの成長のため、除かない
         }
         // イベントに属していないが、微弱検知で使い終えて間もない点(イベントが消えた直後)は除く
@@ -1702,7 +1813,9 @@ export class ShakeDetectionEngine {
         // な上昇(1tickあたりriseThreshold未満)では一度もこのブロックに
         // 到達できず、死んだ経路になってしまう。震度が既にisolatedMin
         // Intensity以上ならゲートを通すようにする。
-        if (point.lastRiseTick !== tick && (point.latestIntensity == null || point.latestIntensity < params.isolatedMinIntensity)) continue;
+        const hasExt = point.extPoints && point.extPoints.length > 0
+          && point.latestIntensity != null && point.latestIntensity >= params.detectionRulesMinIntensity;
+        if (!hasExt && point.lastRiseTick !== tick && (point.latestIntensity == null || point.latestIntensity < params.isolatedMinIntensity)) continue;
 
         if (point.eventId != null) {
           const event = this.events.get(point.eventId);
@@ -1721,9 +1834,14 @@ export class ShakeDetectionEngine {
         const triggered = (point.intensityDiff >= params.isolatedRiseThreshold && isolatedAvgOk)
           || point.latestIntensity >= params.isolatedMinIntensity;
         if (!triggered) {
-          if (point.pendingSince == null) point.pendingSince = tick;
-          continue;
-        }
+          // 近傍0点でも、60km以内に観測点があれば、その裏付けでdetectionRulesを試す(下の通常経路へ)
+          const ext = point.extPoints && point.extPoints.length > 0
+            && point.latestIntensity != null && point.latestIntensity >= params.detectionRulesMinIntensity;
+          if (!ext) {
+            if (point.pendingSince == null) point.pendingSince = tick;
+            continue;
+          }
+        } else {
         point.pendingSince = null;
 
         const targetEvent = createEvent(now, tick);
@@ -1734,6 +1852,7 @@ export class ShakeDetectionEngine {
         // いるため、待たずにそのまま確定扱いにする。
         targetEvent.confirmed = true;
         continue;
+        }
       }
 
       // 【誤検知対策A】従来はweakIntensityCeiling(0.5)未満を一律で
@@ -1826,7 +1945,9 @@ export class ShakeDetectionEngine {
         const neighbor = points.get(np.id);
         if (!neighbor || neighbor.eventId != null) continue;
         if (neighbor.latestIntensity == null) continue;
-        if (neighbor.intensityDiff < params.propagationRiseThreshold) continue;
+        const riseNow = params.propagationUseRecentRise && neighbor.riseRateMax10s != null
+          ? Math.max(neighbor.intensityDiff, neighbor.riseRateMax10s) : neighbor.intensityDiff;
+        if (riseNow < params.propagationRiseThreshold) continue;
         if (event.originLat != null) {
           const distFromOrigin = haversineKm(event.originLat, event.originLon, neighbor.lat, neighbor.lon);
           if (distFromOrigin > params.propagationMaxRadiusKm) continue;
@@ -1837,7 +1958,14 @@ export class ShakeDetectionEngine {
         // currentの検知時刻が記録されていない(=まだイベントのdetectionTimes
         // に載っていない)場合はチェックをスキップして従来通り許可する。
         const currentDetection = event.detectionTimes.get(current.id);
-        if (currentDetection) {
+        if (currentDetection && params.propagationUseRecentRise) {
+          // 反応開始時刻の差で判定する(neighborが反応していない=reactionStartAtが無い場合は、チェックしない)
+          if (neighbor.reactionStartAt != null) {
+            const distKm = haversineKm(current.lat, current.lon, neighbor.lat, neighbor.lon);
+            const dtSec = Math.abs(neighbor.reactionStartAt - currentDetection.detectedAt) / 1000;
+            if (dtSec > distKm / params.pWaveMinSpeedKmS + params.propagationTimingMarginSec) continue;
+          }
+        } else if (currentDetection) {
           const distFromCurrentKm = haversineKm(current.lat, current.lon, neighbor.lat, neighbor.lon);
           const elapsedSeconds = (now - currentDetection.detectedAt) / 1000;
           if (elapsedSeconds > 0 && distFromCurrentKm > 0) {
@@ -1849,6 +1977,43 @@ export class ShakeDetectionEngine {
         addPointToEvent(event, neighbor, level, now, params);
         neighbor.pendingSince = null;
         propagationQueue.push(neighbor.id);
+      }
+    }
+
+    // 6b) 走時による取り込み。外部の震源推定(位置・深さ・発震時刻)があるイベントについて、
+    //     まだどのイベントにも属していない観測点のうち、反応の開始時刻がP波の予測到達に合うものを取り込む。
+    if (params.travelAbsorbEnabled && this.externalEstimates && this.externalEstimates.size > 0) {
+      const cands = [];
+      for (const [id, ev] of this.events) {
+        const est = this.externalEstimates.get(id);
+        if (!est || est.originTime == null || est.lat == null) continue;
+        if (ev.pointCount < params.travelAbsorbMinPoints) continue;
+        let radius = 0;
+        for (const d of ev.detectionTimes.values()) radius = Math.max(radius, haversineKm(est.lat, est.lon, d.lat, d.lon));
+        cands.push({ ev, est, reachKm: Math.min(params.travelAbsorbMaxKm, radius + params.travelAbsorbGrowKm) });
+      }
+      if (cands.length > 0) {
+        for (const point of points.values()) {
+          if (point.eventId != null || point.latestIntensity == null || point.lastOnsetAt == null) continue;
+          if (now - point.lastOnsetAt > params.travelAbsorbMaxAgeSec * 1000) continue;
+          if (point.riseRateMax10s == null || point.riseRateMax10s < params.travelAbsorbMinRise) continue;
+          let best = null;
+          for (const { ev, est, reachKm } of cands) {
+            const epiKm = haversineKm(est.lat, est.lon, point.lat, point.lon);
+            if (epiKm > reachKm) continue;
+            const [tp] = pAndSTravelSec(epiKm, est.depthKm ?? 10);
+            const lag = (point.lastOnsetAt - est.originTime) / 1000 - tp;
+            if (lag < -params.travelAbsorbEarlySec || lag > params.travelAbsorbLateSec) continue;
+            if (!best || Math.abs(lag) < best.absLag) best = { ev, absLag: Math.abs(lag) };
+          }
+          if (!best) continue;
+          const level = intensityToShakeLevel(point.latestIntensity, params.levelThresholds);
+          addPointToEvent(best.ev, point, level, now, params);
+          const d = best.ev.detectionTimes.get(point.id);
+          if (d) d.detectedAt = point.lastOnsetAt;
+          point.absorbedEventId = best.ev.id;
+          point.pendingSince = null;
+        }
       }
     }
 

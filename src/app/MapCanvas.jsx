@@ -1309,7 +1309,13 @@ export function MapCanvas({
   // ない間はApp側でWS接続自体をenabled=falseで切るため、この効果も自然に止まる。
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || status !== "ready" || !showRealtimeMapLayers) return;
+    // 【対策: 地震・津波を見ると検知・推定がリセットされる問題】以前は
+    // showRealtimeMapLayers(地震・津波・潮位観測点を選択中はfalse)がfalseの間、
+    // このeffect全体を早期returnしていたため、検知エンジン・震源推定のtickが止まり、
+    // 選択を解除した時点で観測点の履歴が欠落・イベントが失効して、検知や推定が
+    // 途切れたりやり直しになっていた。検知・推定はデータ源が同じ限り常に進め、
+    // 観測点の描画(setData)と視点移動だけを、表示中に限定する。
+    if (!map || status !== "ready") return;
     const source = map.getSource("realtime-points");
     if (!source) return;
 
@@ -1394,7 +1400,7 @@ export function MapCanvas({
       })
       .sort((a, b) => a.properties.intensity - b.properties.intensity);
 
-    source.setData({ type: "FeatureCollection", features });
+    if (showRealtimeMapLayers) source.setData({ type: "FeatureCollection", features });
 
     // 次回比較用のスナップショットを更新する(表示中/しきい値に関わらず、
     // データのある観測点すべてを対象に記録する)。
@@ -1458,9 +1464,12 @@ export function MapCanvas({
     // 育って観測点が増え、画面の端からはみ出しそうになったら、もう一度調整する。
     // ユーザーが地図を操作している間と操作後2秒間は動かさず、2秒間操作が無ければ再開する。
     // 設定「カメラの動き」で切り替えられる。判断は shakeCameraFollow.js を参照。
-    shakeFollowerRef.current.tick({
-      map, events: shakeEvents, isWide, nowMs: Date.now(), settings: cameraSettings,
-    });
+    // 地震・津波などを選択して見ている間(観測点レイヤー非表示)は、視点を奪わない。
+    if (showRealtimeMapLayers) {
+      shakeFollowerRef.current.tick({
+        map, events: shakeEvents, isWide, nowMs: Date.now(), settings: cameraSettings,
+      });
+    }
     lastShakeEventsRef.current = shakeEvents;
     onShakeEventsChangeRef.current?.(shakeEvents);
 
