@@ -14,6 +14,7 @@ import { BOUNDARY_LINE_COLORS, EEW_FILL_LEGEND_ORDER, INTENSITY_LABEL, STATION_I
 import { EST_INTENSITY_MIN_INTENSITY_KEYS, QUAKE_INTENSITY_RANK, buildEpicenterCircleColorExpr, buildEpicenterCircleStrokeColorExpr, buildEstIntensityFillColorExpr, buildEstIntensityFillFeatures, buildEstIntensityGridFromImage, buildEstIntensityLineCoords, fetchEstimatedIntensityMatch, loadImageElement, meshCodeToBounds, offsetMeshCode } from "./estIntensity";
 import { EPICENTER_LABEL_CANVAS_SCALE, buildDetectedStationIdSet, buildEpicenterEstimateFeatures, buildTrueEpicenterFeatures, drawEpicenterLabelCanvas, updateEpicenterEstimateLabels } from "./shakeMapLayers";
 import { filterEstimatesNearEew } from "./eewEstimateFilter";
+import { filterEstimatesByConfidence, logEstimateConfidenceChanges } from "../epicenterConfidence";
 import { findAreaCodesByName, findEpicenterNameByPoint, findNearestTsunamiAreaWithDistance } from "./geo";
 import { EEW_P_WAVE_SPEED_KM_S, EEW_S_WAVE_SPEED_KM_S, eewCirclePolygon, eewWaveSurfaceRadiusKm } from "./liveFeeds";
 import { aggregateByArea } from "./stations";
@@ -67,6 +68,10 @@ export function MapCanvas({
   // 揺れ検知(shakeDetectionEnabled)自体がOFFの間は、推定に使う揺れ検知
   // イベントが発生しないため実質的に動作しない。
   epicenterEstimationEnabled = false,
+  // 信頼度が下限未満の震源推定も表示するか(設定。デフォルトOFF=表示しない)。
+  showLowConfidenceEstimates = false,
+  // 配列型の微弱検知(ごく弱い揺れの検知)を使うか(設定。デフォルトON)。
+  weakArrayDetectionEnabled = true,
   onEpicenterEstimateChange,
   // 地震検知テスト(shakeTestSimulation.ts)実行中の「正解」の震源(複数同時
   // 実行に対応)。{ lat, lon, depthKm, magnitude }[]。テスト中でなければ
@@ -684,12 +689,14 @@ export function MapCanvas({
             source: "epicenter-estimates",
             layout: { visibility: "none" },
             paint: {
-              "circle-radius": ["case", ["get", "confirmed"], 8, 6],
+              // 信頼度に応じた4段階(levelプロパティ。0=最も薄い〜3=濃い。
+              // epicenterConfidence.tsのestimateDisplayLevel参照)。
+              "circle-radius": ["match", ["get", "level"], 0, 5, 1, 6, 2, 7, 8],
               "circle-color": "#FFFFFF",
               "circle-stroke-color": "#111111",
-              "circle-stroke-width": ["case", ["get", "confirmed"], 2.5, 1.5],
-              "circle-opacity": ["case", ["get", "confirmed"], 1, 0.4],
-              "circle-stroke-opacity": ["case", ["get", "confirmed"], 1, 0.4],
+              "circle-stroke-width": ["match", ["get", "level"], 0, 1.5, 1, 1.5, 2, 2, 2.5],
+              "circle-opacity": ["match", ["get", "level"], 0, 0.25, 1, 0.4, 2, 0.65, 1],
+              "circle-stroke-opacity": ["match", ["get", "level"], 0, 0.25, 1, 0.4, 2, 0.65, 1],
             },
           });
 
@@ -720,7 +727,7 @@ export function MapCanvas({
             // epicenter-estimates-label-layer.layout.icon-opacity:
             // unknown property")。
             paint: {
-              "icon-opacity": ["case", ["get", "confirmed"], 1, 0.55],
+              "icon-opacity": ["match", ["get", "level"], 0, 0.35, 1, 0.5, 2, 0.75, 1],
             },
           });
 
@@ -734,9 +741,14 @@ export function MapCanvas({
             const m = /^epicenter-label-(.+)$/.exec(e.id);
             if (!m) return;
             const eventId = m[1];
-            const est = lastEpicenterEstimatesRef.current?.get(eventId);
+            // イベントIDは、Mapのキーでは数値、画像IDからは文字列になるので、
+            // 文字列にそろえて探す(get(eventId)では見つからなかった)。
+            let est = null;
+            for (const [id, v] of lastEpicenterEstimatesRef.current || []) {
+              if (String(id) === eventId) { est = v; break; }
+            }
             if (!est) return;
-            const imageData = drawEpicenterLabelCanvas(Math.round(est.depthKm), est.magnitude);
+            const imageData = drawEpicenterLabelCanvas(Math.round(est.depthKm), est.magnitude, est.confidence ?? null, est.magnitudeBound ?? null);
             if (!map.hasImage(e.id)) {
               map.addImage(e.id, imageData, { pixelRatio: EPICENTER_LABEL_CANVAS_SCALE });
             }
@@ -1179,6 +1191,11 @@ export function MapCanvas({
   // 最新のeews(震源推定の表示抑制と、EEWのP/S波円アニメーションが参照する)
   const eewsRef = useRef(eews);
   eewsRef.current = eews;
+  // 震源推定の信頼度による表示制御用(設定の最新値と、ヒステリシス・ログの記憶)
+  const showLowConfidenceEstimatesRef = useRef(showLowConfidenceEstimates);
+  showLowConfidenceEstimatesRef.current = showLowConfidenceEstimates;
+  const shownEstimateIdsRef = useRef(new Set());
+  const confidenceLogRef = useRef(new Map());
 
   // 震源推定(epicenterEstimation.ts)本体。ShakeDetectionEngineと同様、
   // 一度だけ生成して使い回す(イベントごとの推定キャッシュを内部に持つため)。
@@ -1195,10 +1212,18 @@ export function MapCanvas({
   // 観測点マスタ(緯度経度)が揃ったら、近傍点リストを再計算する。
   // 観測点の位置は基本的に変わらないため、realtimeStations自体の参照が
   // 変わった時(初回取得・更新時)だけ呼び直せば十分。
+  const weakArrayDetectionEnabledRef = useRef(weakArrayDetectionEnabled);
+  weakArrayDetectionEnabledRef.current = weakArrayDetectionEnabled;
   useEffect(() => {
     if (realtimeStations.length === 0) return;
+    // initializeが微弱検知器を作るので、その前に、設定を反映しておく
+    shakeEngineRef.current.setWeakArrayEnabled(weakArrayDetectionEnabledRef.current);
     shakeEngineRef.current.initialize(realtimeStations);
   }, [realtimeStations]);
+  // 設定の切り替えを、実行中のエンジンへ反映する
+  useEffect(() => {
+    shakeEngineRef.current.setWeakArrayEnabled(weakArrayDetectionEnabled);
+  }, [weakArrayDetectionEnabled]);
 
   // 【データ源切り替え対策】揺れ検知エンジンへ渡している震度値の出どころ。
   // 優先順位はApp側のeffectiveRealtimeValuesと同じ(リプレイ再生中 >
@@ -1448,10 +1473,14 @@ export function MapCanvas({
       const estimates = shakeEvents.length > 0
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, engineNow)
         : new Map();
+      // テスト用: 信頼度の内訳を、非表示になるものも含めてログに残す。
+      logEstimateConfidenceChanges(estimates, confidenceLogRef.current);
+      // 信頼度が下限未満の推定は、設定でオンにしない限り表示しない。
+      const confidentEstimates = filterEstimatesByConfidence(estimates, showLowConfidenceEstimatesRef.current, shownEstimateIdsRef.current);
       // 緊急地震速報(PLUM法を除く)が発表中の地震は、EEWの震源付近の推定を表示しない。
       // 推定そのものと、下のエンジンへのフィードバック(setExternalEstimates)は
       // 抑制せず、表示・コールバック・P/S波円・マーカータップにだけ絞り込み後を使う。
-      const displayEstimates = filterEstimatesNearEew(estimates, eewsRef.current);
+      const displayEstimates = filterEstimatesNearEew(confidentEstimates, eewsRef.current);
       lastEpicenterEstimatesRef.current = displayEstimates;
       // 【対策C: 検知が分散してしまう問題】epicenterEstimation.tsのより
       // 精度の高い推定結果(グリッド探索+振幅較正)を、shakeDetection.ts
@@ -1489,7 +1518,7 @@ export function MapCanvas({
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, realtimeSourceMode, replayActive, replayDataTimeMs, isWide, cameraSettings]);
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, showLowConfidenceEstimates, realtimeSourceMode, replayActive, replayDataTimeMs, isWide, cameraSettings]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、

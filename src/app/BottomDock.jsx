@@ -63,8 +63,10 @@ export function BottomDock({
   realtimeRisingEnabled, onChangeRealtimeRisingEnabled,
   replayJmaColorEnabled, onChangeReplayJmaColorEnabled,
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
+  weakArrayDetectionEnabled, onChangeWeakArrayDetectionEnabled,
   cameraSettings, onChangeCameraSettings,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
+  showLowConfidenceEstimates, onChangeShowLowConfidenceEstimates,
   shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
@@ -1663,10 +1665,14 @@ export function BottomDock({
                   onChangeReplayJmaColorEnabled={onChangeReplayJmaColorEnabled}
                   shakeDetectionEnabled={shakeDetectionEnabled}
                   onChangeShakeDetectionEnabled={onChangeShakeDetectionEnabled}
+                  weakArrayDetectionEnabled={weakArrayDetectionEnabled}
+                  onChangeWeakArrayDetectionEnabled={onChangeWeakArrayDetectionEnabled}
                   cameraSettings={cameraSettings}
                   onChangeCameraSettings={onChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={onChangeEpicenterEstimationEnabled}
+                  showLowConfidenceEstimates={showLowConfidenceEstimates}
+                  onChangeShowLowConfidenceEstimates={onChangeShowLowConfidenceEstimates}
                   testTsunami={testTsunami}
                   onBroadcastTestTsunami={onBroadcastTestTsunami}
                   onCancelTestTsunami={onCancelTestTsunami}

@@ -100,6 +100,7 @@
  */
 
 import { getJmaTravelTimeTable, lookupJmaTravelTime } from "./jmaTravelTime";
+import { WeakArrayDetector } from "./weakArrayDetection";
 
 export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   // 近傍点探索(initialize時に1度だけ計算。SetupNearPoints相当)
@@ -258,6 +259,22 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   detectionRulesMinIntensity: 0.1, // detectionRules評価の対象とする震度下限
                                     // (ルール5のminOwnIntensityに合わせる)
   tickIntervalSeconds: 1,      // 1tickが何秒に相当するか(実データの更新間隔)
+
+  // 【配列型の微弱検知(weakArrayDetection.ts)】震度0未満〜0付近の、ごく弱い揺れ
+  // (沖合の無感地震など)を、P波の伝播順序に合う観測点の立ち上がりの組み合わせとして
+  // 検知する経路(ステップ3c)。既存の検知ルールは、観測点の値(震度の絶対値)や
+  // 連結した広さを条件にするため、最大値が−1付近の弱い地震は検知できなかった。
+  // 誤検知の恐れがあるため、無効にしたい場合は false にする。
+  weakArrayEnabled: true,
+  weakArrayParams: {},         // WeakArrayDetectorの設定の上書き(通常は空でよい)
+  // 微弱検知は、弱い単独の地震のための経路。大きな地震(通常のイベントがこの点数以上)
+  // の強い揺れが続いている間は、その揺れが遠方に届いた観測点が、別の小さなイベントとして
+  // 検知され、イベントが分割・乱立する(東北沖M9のリプレイで、16個→19個に増えた)ので、
+  // 検知を見送る。
+  weakArrayStandDownPoints: 100,
+  // 微弱検知のイベントに使った観測点を、イベントが消えたあと、再び新しいイベントに使わない時間(ms)。
+  // 微弱検知の反応の保持時間(weakArrayParams.poolWindowSec=60秒)より長くする。
+  weakArrayReuseBlockMs: 90_000,
   pWaveMinSpeedKmS: 5.5,       // 伝播速度として妥当とみなす下限(km/s)。
                                 // BFS面的拡張(対策C)・quick retraction
                                 // (対策B)の速度整合性チェックで使用
@@ -1178,6 +1195,14 @@ export class ShakeDetectionEngine {
     // 一時的に無効化する期間の終了時刻(ms、processTickのnow基準)。
     // resetForSourceChange()が設定する。0なら無効化期間なし。
     this.suppressUntil = 0;
+    // 配列型の微弱検知(initializeで作る。weakArrayDetection.ts参照)
+    this.weakArray = null;
+    // 微弱検知のイベントに加えた観測点 → 再び新しいイベントに使わない期限(ms)。
+    // 微弱検知は反応の記録をpoolWindowSec(60秒)保持するが、イベントの寿命(45秒)の方が
+    // 短いので、イベントが消えたあとも同じ反応が残っていて、同じ地震から、もう一度
+    // イベントが作られてしまう(福島県沖・熊本の実データで、2つ目のイベントが出た)。
+    // これを防ぐため、使い終えた観測点を一定時間、探索から除く。
+    this.weakUsedUntil = new Map();
   }
 
   // 【データ源切り替え対策】リアルタイム震度⇔リプレイ・地震検知テストの
@@ -1211,12 +1236,25 @@ export class ShakeDetectionEngine {
     this.broadRiseClusters = [];
     this.externalEstimates = new Map();
     this.suppressUntil = now + suppressMs;
+    if (this.weakArray) this.weakArray.reset();
+    this.weakUsedUntil = new Map();
   }
 
   // 【対策C】App.tsx側でepicenterEstimation.tsのEpicenterEstimatorを実行した
   // 結果を渡すためのsetter。processTickの外(通常は同じtickの後半、または
   // 次のtickの頭)で呼ぶことを想定しており、1tick遅れでの反映になるが、
   // イベント統合の判定は瞬時性より精度を優先すべき処理のため許容している。
+  // 配列型の微弱検知(weakArrayDetection.ts)のオン/オフ。設定画面から、実行中に切り替える。
+  // initialize前なら、設定だけ記録し、initializeで検知器を作る。
+  setWeakArrayEnabled(enabled) {
+    this.params = { ...this.params, weakArrayEnabled: !!enabled };
+    if (!enabled) {
+      this.weakArray = null;
+    } else if (!this.weakArray && this.initialized) {
+      this.weakArray = new WeakArrayDetector([...this.points.values()].map(pt => ({ id: pt.id, lat: pt.lat, lon: pt.lon })), this.params.weakArrayParams);
+    }
+  }
+
   setExternalEstimates(estimates) {
     this.externalEstimates = estimates || new Map();
   }
@@ -1286,6 +1324,11 @@ export class ShakeDetectionEngine {
       point.nearPoints = candidates.slice(0, maxNeighbors);
     }
     this.initialized = true;
+    // 配列型の微弱検知。観測点の座標が確定したこのタイミングで作る(格子との対応を
+    // 事前に計算するため、毎tickではなく初期化時に1度だけ行う)。
+    this.weakArray = this.params.weakArrayEnabled
+      ? new WeakArrayDetector([...this.points.values()].map(pt => ({ id: pt.id, lat: pt.lat, lon: pt.lon })), this.params.weakArrayParams)
+      : null;
     // 観測点マスタが変わると古いidを参照したクラスタが残ってしまうため、
     // 広域継続拡大検知の追跡状態もリセットする。
     this.broadRiseClusters = [];
@@ -1573,6 +1616,72 @@ export class ShakeDetectionEngine {
         }
         // 広さ・継続的な拡大という強い裏付けがあるため、待たずに確定扱いにする。
         targetEvent.confirmed = true;
+      }
+    }
+
+    // 3c) 【配列型の微弱検知】震度0未満〜0付近の、ごく弱い揺れ(沖合の無感地震など)を、
+    //     P波の伝播順序に合う、複数の観測点の立ち上がりの組み合わせとして検知する
+    //     (詳細はweakArrayDetection.ts)。既存の検知ルール・広域拡大検知(ステップ3b)が
+    //     拾えなかった揺れを補う経路で、既に通常のイベントに属している観測点は
+    //     探索から除く(同じ地震を二重に検知しないため)。
+    if (this.weakArray) {
+      const excludeIds = new Set();
+      for (const p of points.values()) {
+        const ev = p.eventId != null ? this.events.get(p.eventId) : null;
+        if (ev) {
+          if (!ev.weakArray) excludeIds.add(p.id); // 通常のイベントに属している点は除く
+          continue; // 微弱検知のイベントに属している点は、そのイベントの成長のため、除かない
+        }
+        // イベントに属していないが、微弱検知で使い終えて間もない点(イベントが消えた直後)は除く
+        const until = this.weakUsedUntil.get(p.id);
+        if (until != null) {
+          if (until > now) excludeIds.add(p.id); else this.weakUsedUntil.delete(p.id);
+        }
+      }
+      const match = this.weakArray.update(now / 1000, valuesMap, excludeIds);
+      let bigEventActive = false;
+      for (const ev of this.events.values()) {
+        if (!ev.weakArray && ev.pointCount >= params.weakArrayStandDownPoints) { bigEventActive = true; break; }
+      }
+      if (match && !bigEventActive) {
+        const memberPoints = [];
+        for (const m of match.members) {
+          const p = points.get(m.id);
+          if (p) memberPoints.push({ m, p });
+        }
+        const relatedEventIds = new Set();
+        for (const { p } of memberPoints) {
+          if (p.eventId != null && this.events.has(p.eventId)) relatedEventIds.add(p.eventId);
+        }
+        const relatedEvents = [...relatedEventIds].map(id => this.events.get(id));
+        let targetEvent;
+        if (relatedEvents.length > 1) {
+          relatedEvents.sort((a, b) => a.createdAt - b.createdAt);
+          targetEvent = relatedEvents[0];
+          for (const other of relatedEvents.slice(1)) {
+            mergeEventInto(targetEvent, other);
+            this.events.delete(other.id);
+          }
+        } else if (relatedEvents.length === 1) {
+          targetEvent = relatedEvents[0];
+        } else {
+          targetEvent = createEvent(now, tick);
+          targetEvent.weakArray = true;
+          this.events.set(targetEvent.id, targetEvent);
+        }
+        for (const { m, p } of memberPoints) {
+          if (targetEvent.pointIds.has(p.id)) continue; // 既に加わっている点は、期限(expireAt)を延ばさない
+          // 検知時刻は、確定した今ではなく、実際に立ち上がった時刻にする(震源推定のため)
+          p.reactionStartAt = m.onsetSec * 1000;
+          this.weakUsedUntil.set(p.id, now + params.weakArrayReuseBlockMs);
+          const level = intensityToShakeLevel(p.latestIntensity ?? -3, params.levelThresholds);
+          addPointToEvent(targetEvent, p, level, now, params);
+          p.pendingSince = null;
+        }
+        // 複数の観測点がP波の伝播順序に合うという強い裏付けがあるため、確定扱いにする。
+        // 立ち上がりが弱く、数秒で収まる揺れなので、素早い取り消し(ステップ9)の対象外にする。
+        targetEvent.confirmed = true;
+        if (targetEvent.weakArray) targetEvent.retractionCheckDone = true;
       }
     }
 
