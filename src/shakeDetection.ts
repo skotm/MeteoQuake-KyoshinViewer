@@ -101,6 +101,7 @@
 
 import { getJmaTravelTimeTable, lookupJmaTravelTime } from "./jmaTravelTime";
 import { WeakArrayDetector } from "./weakArrayDetection";
+import { calcPeakIntensity } from "./shakeTestSimulation";
 
 export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   // 近傍点探索(initialize時に1度だけ計算。SetupNearPoints相当)
@@ -422,6 +423,21 @@ export const DEFAULT_SHAKE_DETECTION_PARAMS = {
   // 位置・発震時刻から計算したP波の到達時刻に、反応の開始時刻が合う観測点を、25km以内の近傍が
   // 検知済みかどうかに関係なく、そのイベントへ取り込む。揺れが弱く、観測点が離れた地域
   // (北海道東部など)で、震度0.1未満の弱い反応の観測点が、近傍の連鎖が切れて取り残されていた。
+  indepEnabled: true,            // 独立した別の地震とみなして統合しない判定(independentSourceFit参照)
+  earlyVetoEnabled: true,          // 主イベントのP波到達より早い検知の副イベントは統合しない(earlierThanMainWave)
+  earlyVetoMaxFitCost: 8,          // 主イベントの点震源フィットの誤差がこれ以下のときだけ判定する
+  earlyVetoSec: 20,                // P波到達よりこれだけ早ければ「早すぎる」とみなす(検知時刻の誤差の余裕)
+  earlyVetoRatio: 0.7,             // 副イベントの検知点のうち、これ以上の割合が早ければ統合しない
+  indepMinPoints: 12,            // 副イベントがこの点数以上で判定する(少ないと判別できない)
+  indepMaxCost: 4.5,
+  indepMinSeparationKm: 150,       // 主イベントの推定震央からこれ以上離れた所に震源が求まることが、独立とみなす条件
+  indepMinLaterSec: 20,            // 副イベントの推定発震が、主イベントの発震よりこれ以上遅いこと
+  indepFlatCostRatio: 0.85,        // 点震源の誤差が、「全点同時」とした誤差のこの倍以下であること(伝播の遅れが時刻を説明していること)
+  indepExcessPerMag: 1.2,          // 主イベントのM7超過1あたり、上の下限に加える量
+  indepMinExcess: 0.5,             // 主イベント由来の予想震度を上回る量(上位3点平均)の下限。コーダ約-1〜-2、独立地震約+1.5
+  indepCapSec: 3,
+  indepMarginDeg: 0.3,
+  indepStepDeg: 0.15,
   gapFillEnabled: true,          // 更新間隔が空いた時、間のtickを補間して進める(processTick参照)
   gapFillMinMs: 1500,
   gapFillMaxMs: 6000,
@@ -821,6 +837,116 @@ function pAndSTravelSec(epicentralKm, depthKm) {
   const hypoKm = Math.hypot(epicentralKm, depthKm);
   return [hypoKm / 6.8, hypoKm / 3.9];
 }
+// 【対策: 別々の地震が誤って統合される問題】副イベントの検知点が、そのイベント自身の点震源(クラスターの
+// 範囲内の浅い震源)から広がるP波として、到達時刻をよく説明できるかを調べる。説明できれば、主イベントの
+// 後続動(coda)や遠方の揺れではなく、独立した別の地震とみなして、統合しない。主イベントの後続動は、
+// 主イベントの震源から平面的に伝わる波なので、クラスターの内側に震源を置いても、到達時刻の並びを説明できない。
+// 検知は、真のP波到達より「遅れる」ことはあっても「早まる」ことはほぼ無いので、非対称のロバスト誤差を使う
+// (発生時刻は残差の下位25%点、それより早い側は4倍の重み、遅い側は1点あたりindepCapSecで頭打ち)。
+function independentSourceFit(ev, params) {
+  const cache = ev._indepFit;
+  if (cache && Math.abs(cache.n - ev.pointCount) < 3) return cache.fit;
+  const all = [...ev.detectionTimes.values()];
+  if (all.length < params.indepMinPoints) { ev._indepFit = { n: ev.pointCount, fit: null }; return null; }
+  const step = Math.max(1, Math.floor(all.length / 60));
+  const dets = all.filter((_, i) => i % step === 0);
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (const d of dets) { minLat = Math.min(minLat, d.lat); maxLat = Math.max(maxLat, d.lat); minLon = Math.min(minLon, d.lon); maxLon = Math.max(maxLon, d.lon); }
+  const m = params.indepMarginDeg;
+  const cap2 = params.indepCapSec * params.indepCapSec;
+  const n = dets.length;
+  const r = new Array(n);
+  let best = null;
+  for (let lat = minLat - m; lat <= maxLat + m + 1e-9; lat += params.indepStepDeg) {
+    for (let lon = minLon - m; lon <= maxLon + m + 1e-9; lon += params.indepStepDeg) {
+      for (const depth of [10, 40, 80]) {
+        for (let i = 0; i < n; i++) {
+          r[i] = dets[i].detectedAt / 1000 - pAndSTravelSec(haversineKm(lat, lon, dets[i].lat, dets[i].lon), depth)[0];
+        }
+        const sorted = [...r].sort((a, b) => a - b);
+        const origin = sorted[Math.floor((n - 1) * 0.25)];
+        let sum = 0;
+        for (let i = 0; i < n; i++) {
+          const dev = r[i] - origin; const sq = dev * dev;
+          sum += dev < 0 ? 4 * Math.min(sq, cap2) : Math.min(sq, cap2);
+        }
+        const cost = sum / n;
+        if (!best || cost < best.cost) best = { cost, originMs: origin * 1000, lat, lon, depth };
+      }
+    }
+  }
+  ev._indepFit = { n: ev.pointCount, fit: best };
+  return best;
+}
+// 副イベントの観測点の震度が、主イベントの震源・規模から予想される震度を、どれだけ上回るか(上位3点の平均)。
+// 主イベントの後続動・遠方の揺れなら、予想(減衰式)と同程度かそれ以下だが、独立した別の地震なら、
+// 自身の震央付近で、主イベント由来の予想を大きく上回る揺れを観測する。
+function intensityExcessOverMain(ev, estMain) {
+  if (estMain.magnitude == null || estMain.lat == null) return null;
+  const ex = [];
+  for (const d of ev.detectionTimes.values()) {
+    if (d.intensity == null) continue;
+    const epi = haversineKm(estMain.lat, estMain.lon, d.lat, d.lon);
+    const exp = calcPeakIntensity(estMain.magnitude, estMain.depthKm ?? 10, Math.hypot(epi, estMain.depthKm ?? 10));
+    ex.push(d.intensity - exp);
+  }
+  if (ex.length === 0) return null;
+  ex.sort((a, b) => b - a);
+  const k = Math.min(3, ex.length);
+  let s = 0; for (let i = 0; i < k; i++) s += ex[i];
+  return s / k;
+}
+// 検知時刻が距離によらず一定(同時)とみなした場合の誤差(independentSourceFitと同じ頭打ち誤差、発生時刻=下位25%点)。
+// 点震源の誤差がこれと大差なければ、時刻の差(距離による遅れ=波の伝播)が小さく、点震源の根拠が弱い
+// (コンパクトな集団や、距離によらず遅れて検知される場合は、どんな震源でも当てはまってしまう)。
+function flatTimeCost(ev, params) {
+  const cap2 = params.indepCapSec * params.indepCapSec;
+  const t = [...ev.detectionTimes.values()].map((d) => d.detectedAt / 1000).sort((a, b) => a - b);
+  if (t.length === 0) return null;
+  const o = t[Math.floor((t.length - 1) * 0.25)];
+  let sum = 0;
+  for (const x of t) sum += Math.min((x - o) * (x - o), cap2);
+  return sum / t.length;
+}
+function looksIndependent(ev, mainEst, params) {
+  if (!params.indepEnabled) return false;
+  const fit = independentSourceFit(ev, params);
+  if (!fit) return false;
+  const excess = intensityExcessOverMain(ev, mainEst);
+  // 主イベントの震央に近い所に震源が求まる副イベントは、同じ地震の分裂(破片)の可能性が高いので、独立とはみなさない。
+  const sepKm = mainEst && mainEst.lat != null ? haversineKm(mainEst.lat, mainEst.lon, fit.lat, fit.lon) : 0;
+  const laterOk = mainEst && mainEst.originTime != null ? (fit.originMs - mainEst.originTime) / 1000 >= params.indepMinLaterSec : true;
+  // 主イベントが大きいほど震源域が広く、点震源の減衰式による予想震度は過小になる(実際の揺れはもっと広く強い)ので、
+  // 「予想を上回る量」の基準を、M7を超える分だけ厳しくする。
+  const minExcess = params.indepMinExcess + params.indepExcessPerMag * Math.max(0, (mainEst?.magnitude ?? 0) - 7);
+  const ok0 = fit.cost <= params.indepMaxCost && excess != null && excess >= minExcess
+    && sepKm >= params.indepMinSeparationKm && laterOk;
+  const mainCost = ok0 ? flatTimeCost(ev, params) : null;
+  const ok = ok0 && (mainCost == null || fit.cost <= params.indepFlatCostRatio * mainCost);
+  return ok;
+}
+
+// 【対策: 同時期に離れた場所で起きた別の地震が統合される問題】副イベントの検知が、主イベントの震源から
+// 伝わるP波の到達より、明らかに「早い」ときは、主イベントの波では起こせない検知なので、別の地震である。
+// (2018-01-05 富山と茨城沖の2地震: 約350km離れ、検知は約8秒差。従来の統合判定は「遅すぎない」という
+// 片側のタイミング確認だけで、早すぎる側を見ていなかった。)主イベントの震源は、独立判定と同じ点震源の
+// フィット(independentSourceFit)で求めるので、推定が未収束でも使える。フィットの誤差が大きい
+// (主イベントの震源が定まらない=大地震の広がった検知など)ときは判定しない。
+function earlierThanMainWave(main, other, params) {
+  if (!params.earlyVetoEnabled) return false;
+  const fit = independentSourceFit(main, params);
+  if (!fit || fit.cost > params.earlyVetoMaxFitCost) return false;
+  const dets = [...other.detectionTimes.values()];
+  if (dets.length === 0) return false;
+  let early = 0;
+  for (const d of dets) {
+    const epi = haversineKm(fit.lat, fit.lon, d.lat, d.lon);
+    const tp = pAndSTravelSec(epi, fit.depth)[0];
+    if ((d.detectedAt - fit.originMs) / 1000 < tp - params.earlyVetoSec) early++;
+  }
+  return early / dets.length >= params.earlyVetoRatio;
+}
+
 function canEventBeMergedByTravelTime(main, other, estMain, params) {
   if (!estMain || estMain.originTime == null) return false;
   if (main.pointCount < params.mergeTravelTimeMinMainPoints) return false;
@@ -830,6 +956,7 @@ function canEventBeMergedByTravelTime(main, other, estMain, params) {
   if (!estMain.confirmed && main.pointCount < params.mergeTravelTimeUnconfirmedMinPoints) return false;
   const dets = [...other.detectionTimes.values()];
   if (dets.length < 1) return false;
+  if (looksIndependent(other, estMain, params)) return false;
   // 1点だけの副イベント(孤立した観測点の検知)は、偶然、窓に入る可能性が高いので、窓を
   // 広げる加算(大きな地震の表面波・破壊継続時間)は使わず、P波〜S波の窓だけで判定する。
   const strict = dets.length < 2;
@@ -874,12 +1001,31 @@ function canEventBeMergedByTravelTime(main, other, estMain, params) {
   return false;
 }
 
+// 関連イベントの一括統合(広域の揺れ上昇・BFS拡張など)で、主イベントとは独立した別の地震とみなせる副イベントは
+// 統合の対象から外す(canEventsMergeの独立判定と同じ基準)。
+function dropIndependentEvents(related, externalEstimates, params) {
+  if (related.length < 2) return related;
+  let main = related[0];
+  for (const e of related) if (e.pointCount > main.pointCount) main = e;
+  const estM = externalEstimates ? externalEstimates.get(main.id) : null;
+  const useEst = estM && estM.originTime != null && main.pointCount >= params.mergeTravelTimeMinMainPoints;
+  return related.filter((e) => e === main || !(earlierThanMainWave(main, e, params) || (useEst && looksIndependent(e, estM, params))));
+}
+
 function canEventsMerge(a, b, params, externalEstimates) {
+  // 主イベントの波では起こせない(P波の到達より早い)検知の副イベントは、別の地震なので、どの経路でも統合しない。
+  {
+    const aIsMain0 = a.pointCount >= b.pointCount;
+    if (earlierThanMainWave(aIsMain0 ? a : b, aIsMain0 ? b : a, params)) return false;
+  }
   // 【対策】収束済みの主イベントの推定から計算した走時の窓に、副イベントの観測点が
   // 収まっていれば、同じ地震として統合する(上のcanEventBeMergedByTravelTime参照)。
   if (externalEstimates) {
     const aIsMain = a.pointCount >= b.pointCount;
     const main = aIsMain ? a : b, other = aIsMain ? b : a;
+    // 副イベントが、主イベントとは独立した別の地震とみなせるなら、後段の判定(推定同士の整合など)でも統合しない。
+    const estM = externalEstimates.get(main.id);
+    if (estM && estM.originTime != null && main.pointCount >= params.mergeTravelTimeMinMainPoints && looksIndependent(other, estM, params)) return false;
     if (canEventBeMergedByTravelTime(main, other, externalEstimates.get(main.id), params)) return true;
   }
   // 【対策C】精度の高い外部推定(epicenterEstimation.ts)が両方のイベントで
@@ -1701,7 +1847,8 @@ export class ShakeDetectionEngine {
           const p = points.get(id);
           if (p.eventId != null) relatedEventIds.add(p.eventId);
         }
-        const relatedEvents = [...relatedEventIds].map(id => this.events.get(id)).filter(Boolean);
+        let relatedEvents = [...relatedEventIds].map(id => this.events.get(id)).filter(Boolean);
+        relatedEvents = dropIndependentEvents(relatedEvents, this.externalEstimates, params);
 
         let targetEvent;
         if (relatedEvents.length > 1) {
@@ -1764,7 +1911,8 @@ export class ShakeDetectionEngine {
         for (const { p } of memberPoints) {
           if (p.eventId != null && this.events.has(p.eventId)) relatedEventIds.add(p.eventId);
         }
-        const relatedEvents = [...relatedEventIds].map(id => this.events.get(id));
+        let relatedEvents = [...relatedEventIds].map(id => this.events.get(id));
+        relatedEvents = dropIndependentEvents(relatedEvents, this.externalEstimates, params);
         let targetEvent;
         if (relatedEvents.length > 1) {
           relatedEvents.sort((a, b) => a.createdAt - b.createdAt);
@@ -1888,7 +2036,8 @@ export class ShakeDetectionEngine {
       // ルールを満たした近傍のうち、既にイベントに属している点があれば合流する。
       const relatedEventIds = new Set();
       for (const nb of result.matchedNeighbors) if (nb.eventId != null) relatedEventIds.add(nb.eventId);
-      const relatedEvents = [...relatedEventIds].map(id => this.events.get(id)).filter(Boolean);
+      let relatedEvents = [...relatedEventIds].map(id => this.events.get(id)).filter(Boolean);
+        relatedEvents = dropIndependentEvents(relatedEvents, this.externalEstimates, params);
 
       let targetEvent;
       if (relatedEvents.length > 1) {
@@ -2004,7 +2153,7 @@ export class ShakeDetectionEngine {
             const [tp] = pAndSTravelSec(epiKm, est.depthKm ?? 10);
             const lag = (point.lastOnsetAt - est.originTime) / 1000 - tp;
             if (lag < -params.travelAbsorbEarlySec || lag > params.travelAbsorbLateSec) continue;
-            if (!best || Math.abs(lag) < best.absLag) best = { ev, absLag: Math.abs(lag) };
+            if (!best || Math.abs(lag) < best.absLag) best = { ev, absLag: Math.abs(lag), lag };
           }
           if (!best) continue;
           const level = intensityToShakeLevel(point.latestIntensity, params.levelThresholds);
@@ -2038,6 +2187,17 @@ export class ShakeDetectionEngine {
           const b = eventList[j];
           if (!this.events.has(b.id) || b.centerLat == null) continue;
           if (canEventsMerge(a, b, params, this.externalEstimates)) {
+            // 3つ以上のイベントが互いに統合できる場合は、より近いイベントへ統合する(同時期に遠く離れて起きた
+            // 2つの地震の、どちらにも当てはまる遅れて検知された点が、大きい方へ吸われて、遠い方に付くのを防ぐ)。
+            const cd = (x, y) => haversineKm(x.centerLat, x.centerLon, y.centerLat, y.centerLon);
+            const dab = cd(a, b);
+            let hasCloser = false;
+            for (const c of eventList) {
+              if (c === a || c === b || !this.events.has(c.id) || c.centerLat == null) continue;
+              if ((cd(c, a) < dab && canEventsMerge(c, a, params, this.externalEstimates))
+                  || (cd(c, b) < dab && canEventsMerge(c, b, params, this.externalEstimates))) { hasCloser = true; break; }
+            }
+            if (hasCloser) continue;
             mergeEventInto(a, b);
             this.events.delete(b.id);
             merged = true;
