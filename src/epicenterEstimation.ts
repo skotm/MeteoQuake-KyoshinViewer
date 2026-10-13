@@ -370,7 +370,55 @@ const MANY_POINTS_MAX_DEPTH_KM = 150;
 // nullを返す(＝「上限に張り付く」という概念自体が当てはまらない)。
 function maxDepthForPointCount(pointCount) {
   if (pointCount <= FEW_POINTS_MAX_FOR_FIXED_DEPTH) return null;
-  return pointCount <= SOME_POINTS_MAX_FOR_DEPTH_CAP ? SOME_POINTS_MAX_DEPTH_KM : MANY_POINTS_MAX_DEPTH_KM;
+  if (pointCount <= SOME_POINTS_MAX_FOR_DEPTH_CAP) return SOME_POINTS_MAX_DEPTH_KM;
+  if (DEEP_SEARCH.enabled && pointCount >= DEEP_SEARCH.minPoints) return DEEP_SEARCH.maxDepthKm;
+  return MANY_POINTS_MAX_DEPTH_KM;
+}
+
+// 【深発地震への対応】以前は深さの探索上限を150kmに固定していた(浅い震源が遠方の観測点だけで
+// 深く誤推定される退化解を避けるため)。しかし、日本海・伊豆小笠原・フィリピン海・千島の
+// スラブでは深さ200〜600kmの深発地震が起き、上限150kmでは、推定が浅く・遠くにずれる。
+// 検知点がminPoints以上に増えた段階で、探索上限をmaxDepthKmまで広げる。退化解を避けるため、
+// 深さ150kmを超える候補の誤差には、超過分に比例する割増(penaltyPerKm)を掛け、浅い解で
+// 説明がつくなら浅い方を選ぶようにしている。
+export const DEEP_SEARCH = {
+  enabled: true,
+  minPoints: 20,
+  maxDepthKm: 700,
+  penaltyPerKm: 0.0004,
+  // 【広域パス】通常の推定は、最初の観測点に近い上位MAX_STATIONS_FOR_ESTIMATION点だけを使い、
+  // 遠方ほど重みも小さい(1/距離²)。深発地震は、揺れが広い範囲にほぼ同時に届くため、近傍の
+  // 数十点では到達時刻の差が小さく、深さを決める手がかり(広い範囲での到達時刻の広がり)が無い
+  // (推定が浅く・最初の観測点付近に張り付く)。通常の結果が深さwideTriggerDepthKm以上のとき、
+  // 検知点を距離順に等間隔で選び直し(広い範囲を均等にカバー)、重みも一様にしてもう一度推定し、
+  // 広い範囲の到達時刻をより良く説明できる(RMSがwideBetterRatio倍未満)なら採用する。
+  widePass: true,
+  wideMinPoints: 30,
+  wideTriggerDepthKm: 40,
+  wideBetterRatio: 0.8,
+  // 広域パスで使う検知点は、通常パスの推定位置からこの距離以内に限る。遠方の無関係な検知
+  // (誤検知・別の地震)が混ざると、それを説明するために深さ660kmのような解が選ばれてしまう
+  // (2026-10-07のM4.1のリプレイで、検知点50〜115点の間、35秒ほど深さ660kmと推定された)。
+  wideRadiusKm: 300,
+  wideMinInRadius: 30,
+  // 【広域探索パス】最初に検知した観測点を中心にしない、時間だけの探索。深発地震では、揺れが広く
+  // 同時に届くうえ、異常震域(スラブが高周波を太平洋側へ導く)で、震央に近い観測点ほど弱く、遠い
+  // 観測点の方が強い。このため「最初の観測点=震央の近く」という前提が崩れ、最初の観測点を中心とする
+  // 探索範囲(2〜3.5度)に、陸から遠い震央が入らない。通常の結果(深さ・誤差が怪しいとき)を中心に、
+  // ±globalSpanDegの範囲を、振幅を使わず(異常震域の影響を受けない)、遅れて検知される観測点に寛容な
+  // 非対称のロバスト誤差で探索し、同じ誤差で通常の結果より明確に良ければ採用する。
+  globalPass: true,
+  globalMinPoints: 25,
+  globalTriggerDepthKm: 60,    // 通常の結果の深さがこれ以上なら探索する
+  globalSpanDeg: 4,
+  globalCoarseStepDeg: 0.5,
+  globalFineStepDeg: 0.1,
+  globalCapSec: 4,             // 1点あたりの残差の上限(外れ値の影響を抑える)
+  globalEarlyWeight: 4,        // 推定の発生時刻より「早い」検知(物理的にあり得ない側)の重み
+  globalBetterRatio: 0.7,
+};
+function deepPenaltyFactor(depthKm) {
+  return depthKm > MANY_POINTS_MAX_DEPTH_KM ? 1 + DEEP_SEARCH.penaltyPerKm * (depthKm - MANY_POINTS_MAX_DEPTH_KM) : 1;
 }
 
 // 粗い探索・細かい探索それぞれで使う深さ候補のリストを、検知点数に応じて
@@ -382,9 +430,10 @@ function buildDepthCandidates(pointCount, stage, coarseBestDepthKm) {
   }
   const maxDepth = maxDepthForPointCount(pointCount);
   if (stage === "coarse") {
-    return [10, 50, 90, 130].filter(d => d <= maxDepth);
+    return [10, 50, 90, 130, 180, 250, 350, 450, 600].filter(d => d <= maxDepth);
   }
-  const offsets = [-20, -10, 0, 10, 20];
+  // 深い候補では、粗い探索の刻みが大きい(50〜150km)ので、細かい探索の刻みも広げる。
+  const offsets = coarseBestDepthKm > MANY_POINTS_MAX_DEPTH_KM ? [-60, -30, 0, 30, 60] : [-20, -10, 0, 10, 20];
   const candidates = [...new Set(offsets.map(o => coarseBestDepthKm + o).filter(d => d >= 0 && d <= maxDepth))];
   return candidates.length > 0 ? candidates : [Math.min(coarseBestDepthKm, maxDepth)];
 }
@@ -1029,7 +1078,7 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
  * EpicenterEstimator.updateAll()を経由した結果にのみconfirmed/stableForMsが
  * 追加される。
  */
-export function estimateEpicenter(event, allStations = null, now = Date.now()) {
+function estimateEpicenterCore(event, allStations, now, opts) {
   const detections = event?.detections;
   if (!detections || detections.length < MIN_DETECTION_POINTS) return null;
 
@@ -1127,11 +1176,11 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
   // ようにし、誤差項自体(到達時刻・震度のズレ)だけが候補ごとに変わるように
   // 分離した。
   const detectionWeightById = new Map(
-    estimationDetections.map(d => [d.id, weightForDistance(haversineKm(gridCenterLat, gridCenterLon, d.lat, d.lon), firstDistKm)])
+    estimationDetections.map(d => [d.id, opts?.flatWeights ? 1 : weightForDistance(haversineKm(gridCenterLat, gridCenterLon, d.lat, d.lon), firstDistKm)])
   );
 
   const evalCoarse = (lat, lon, depthKm) =>
-    computeCoarseErrorLevel({ lat, lon, depthKm }, estimationDetections, detectionWeightById);
+    computeCoarseErrorLevel({ lat, lon, depthKm }, estimationDetections, detectionWeightById) * deepPenaltyFactor(depthKm);
 
   // 【24節】検知点数が少ない間だけ、coarse探索の評価候補を全て記録しておく
   // (マルチスタート用)。検知点数が多い場合はメモリ・比較コストが無駄になる
@@ -1219,7 +1268,7 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
     }
 
     const evalFine = (lat, lon, depthKm) =>
-      computeErrorLevel({ lat, lon, depthKm }, estimationDetections, detectionWeightById, nearbyUndetectedStations, now, amplitudePenaltyMultiplier, spTimePenaltyMultiplier);
+      computeErrorLevel({ lat, lon, depthKm }, estimationDetections, detectionWeightById, nearbyUndetectedStations, now, amplitudePenaltyMultiplier, spTimePenaltyMultiplier) * deepPenaltyFactor(depthKm);
 
     const fineDepths = buildDepthCandidates(detections.length, "fine", start.depthKm);
     for (let dLat = -FINE_GRID_RADIUS_DEG; dLat <= FINE_GRID_RADIUS_DEG + 1e-9; dLat += FINE_GRID_STEP_DEG) {
@@ -1299,7 +1348,10 @@ export function estimateEpicenter(event, allStations = null, now = Date.now()) {
     // 使えない(実データのリプレイで、位置が合っていてもRMS換算で1〜5秒になった)。
     timeRmsMs: computeTimeResidualRmsMs(best, estimationDetections, detectionWeightById),
     // 深さの探索上限(null=上限なし)。深さが上限に近いほど、解が信頼できない。
-    depthLimitKm: maxDepthAllowed,
+    // 探索上限を広げた(DEEP_SEARCH)後も、深さ150km以下の推定では従来どおり150kmを上限として報告する
+    // (信頼度の深さ余裕の計算が、探索上限の拡大だけで変わらないようにするため)。
+    depthLimitKm: maxDepthAllowed == null ? null
+      : (best.depthKm > MANY_POINTS_MAX_DEPTH_KM ? maxDepthAllowed : Math.min(maxDepthAllowed, MANY_POINTS_MAX_DEPTH_KM)),
     // 推定Mが探索範囲の端(下限3.0・上限8.0)に張り付いているか。端に張り付いた
     // 値は「その値」ではなく「それ以下/以上」という意味にしかならない。
     // 'low': 下限(MAGNITUDE_MIN)に張り付いている(=M3.0以下) / 'high': 上限に張り付いている
@@ -1444,4 +1496,142 @@ export class EpicenterEstimator {
 
     return results;
   }
+}
+
+// 距離順(最初の観測点から近い順)に並べ、等間隔にlimit点を選ぶ(広い範囲を均等にカバーする)。
+function selectSpreadDetections(detections, limit) {
+  let first = detections[0];
+  for (const d of detections) if (d.detectedAt < first.detectedAt) first = d;
+  const sorted = detections.map(d => ({ d, dist: haversineKm(first.lat, first.lon, d.lat, d.lon) })).sort((a, b) => a.dist - b.dist).map(x => x.d);
+  if (sorted.length <= limit) return sorted;
+  const out = [];
+  for (let i = 0; i < limit; i++) out.push(sorted[Math.round(i * (sorted.length - 1) / (limit - 1))]);
+  if (!out.includes(first)) out.push(first);
+  return out;
+}
+
+// 時間だけの、非対称・ロバストな誤差。観測点の検知は、本当のP波到達より「遅れる」ことはあっても
+// 「早まる」ことはほぼ無い(弱いP波は閾値を越えるまで時間がかかる)。このため、発生時刻は残差の
+// 下位25%点とし、それより早い側は強く(globalEarlyWeight倍)、遅い側はglobalCapSecで頭打ちにする。
+function robustTimeCost(lat, lon, depthKm, dets) {
+  const n = dets.length;
+  const r = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const d = dets[i];
+    r[i] = d.detectedAt / 1000 - travelTimeMs(haversineKm(lat, lon, d.lat, d.lon), depthKm) / 1000;
+  }
+  const sorted = [...r].sort((a, b) => a - b);
+  const origin = sorted[Math.floor((n - 1) * 0.25)];
+  const cap2 = DEEP_SEARCH.globalCapSec * DEEP_SEARCH.globalCapSec;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const dev = r[i] - origin;
+    const sq = dev * dev;
+    sum += dev < 0 ? Math.min(DEEP_SEARCH.globalEarlyWeight * sq, DEEP_SEARCH.globalEarlyWeight * cap2) : Math.min(sq, cap2);
+  }
+  return { cost: sum / n * deepPenaltyFactor(depthKm), origin };
+}
+
+function globalTimeSearch(center, dets) {
+  const span = DEEP_SEARCH.globalSpanDeg;
+  const depths = [10, 50, 100, 150, 200, 300, 400, 500, 600];
+  let best = null;
+  const evalAt = (lat, lon, depthKm) => {
+    const c = robustTimeCost(lat, lon, depthKm, dets);
+    if (!best || c.cost < best.cost) best = { lat, lon, depthKm, cost: c.cost, origin: c.origin };
+  };
+  for (let dLat = -span; dLat <= span + 1e-9; dLat += DEEP_SEARCH.globalCoarseStepDeg) {
+    for (let dLon = -span; dLon <= span + 1e-9; dLon += DEEP_SEARCH.globalCoarseStepDeg) {
+      for (const dep of depths) evalAt(center.lat + dLat, center.lon + dLon, dep);
+    }
+  }
+  const c0 = best;
+  const fs = DEEP_SEARCH.globalFineStepDeg;
+  for (let dLat = -0.6; dLat <= 0.6 + 1e-9; dLat += fs) {
+    for (let dLon = -0.6; dLon <= 0.6 + 1e-9; dLon += fs) {
+      for (const off of [-60, -30, 0, 30, 60]) {
+        const dep = c0.depthKm + off;
+        if (dep < 0 || dep > DEEP_SEARCH.maxDepthKm) continue;
+        evalAt(c0.lat + dLat, c0.lon + dLon, dep);
+      }
+    }
+  }
+  return best;
+}
+
+export function estimateEpicenter(event, allStations = null, now = Date.now()) {
+  const r1 = estimateEpicenterCore(event, allStations, now, null);
+  if (!r1 || !DEEP_SEARCH.enabled) return r1;
+  const cur = estimateWidePass(event, allStations, now, r1);
+  return estimateGlobalPass(event, cur);
+}
+
+function estimateGlobalPass(event, cur) {
+  if (!DEEP_SEARCH.globalPass) return cur;
+  const dets = event.detections;
+  if (dets.length < DEEP_SEARCH.globalMinPoints || cur.depthKm < DEEP_SEARCH.globalTriggerDepthKm) return cur;
+  const inRadius = dets.filter(d => haversineKm(cur.lat, cur.lon, d.lat, d.lon) <= 600);
+  if (inRadius.length < DEEP_SEARCH.globalMinPoints) return cur;
+  const set = selectSpreadDetections(inRadius, 80);
+  const g = globalTimeSearch({ lat: cur.lat, lon: cur.lon }, set);
+  const base = robustTimeCost(cur.lat, cur.lon, cur.depthKm, set);
+  if (!g || !(g.cost < base.cost * DEEP_SEARCH.globalBetterRatio)) return cur;
+  // Mは、位置・深さが変わるので求め直す(通常パスと同じ重み・観測点)。
+  let first = dets[0];
+  for (const d of dets) if (d.detectedAt < first.detectedAt) first = d;
+  let firstDistKm = null;
+  for (const d of dets) {
+    if (d === first) continue;
+    const dist = haversineKm(first.lat, first.lon, d.lat, d.lon);
+    if (firstDistKm == null || dist < firstDistKm) firstDistKm = dist;
+  }
+  if (firstDistKm == null || firstDistKm <= 0) firstDistKm = NEAR_STATION_FIXED_WEIGHT_RADIUS_KM;
+  const near = selectNearestDetections(dets, [{ lat: g.lat, lon: g.lon }], first);
+  const nearWeights = new Map(near.map(d => [d.id, weightForDistance(haversineKm(g.lat, g.lon, d.lat, d.lon), firstDistKm)]));
+  const mf = fitMagnitude({ lat: g.lat, lon: g.lon, depthKm: g.depthKm }, near, nearWeights, FINAL_MAGNITUDE_CANDIDATES);
+  return {
+    ...cur,
+    lat: Math.round(g.lat * 100) / 100,
+    lon: Math.round(g.lon * 100) / 100,
+    depthKm: g.depthKm,
+    originTime: g.origin * 1000,
+    magnitude: mf ? mf.magnitude : cur.magnitude,
+    magnitudeAtBound: mf ? (mf.magnitude <= MAGNITUDE_MIN + 1e-9 || mf.magnitude >= MAGNITUDE_MAX - 1e-9) : false,
+    magnitudeBound: mf ? (mf.magnitude <= MAGNITUDE_MIN + 1e-9 ? 'low' : mf.magnitude >= MAGNITUDE_MAX - 1e-9 ? 'high' : null) : null,
+    depthLimitKm: g.depthKm > MANY_POINTS_MAX_DEPTH_KM ? DEEP_SEARCH.maxDepthKm : cur.depthLimitKm,
+    globalPass: true,
+  };
+}
+
+function estimateWidePass(event, allStations, now, r1) {
+  if (!DEEP_SEARCH.widePass) return r1;
+  const dets = event.detections;
+  if (dets.length < DEEP_SEARCH.wideMinPoints || r1.depthKm < DEEP_SEARCH.wideTriggerDepthKm) return r1;
+  const inRadius = dets.filter(d => haversineKm(r1.lat, r1.lon, d.lat, d.lon) <= DEEP_SEARCH.wideRadiusKm);
+  if (inRadius.length < DEEP_SEARCH.wideMinInRadius) return r1;
+  const wide = selectSpreadDetections(inRadius, MAX_STATIONS_FOR_ESTIMATION);
+  const r2 = estimateEpicenterCore({ ...event, detections: wide }, allStations, now, { flatWeights: true });
+  if (!r2) return r1;
+  const uniform = new Map(wide.map(d => [d.id, 1]));
+  const rms1 = computeTimeResidualRmsMs({ lat: r1.lat, lon: r1.lon, depthKm: r1.depthKm }, wide, uniform);
+  const rms2 = computeTimeResidualRmsMs({ lat: r2.lat, lon: r2.lon, depthKm: r2.depthKm }, wide, uniform);
+  if (rms1 == null || rms2 == null || !(rms2 < rms1 * DEEP_SEARCH.wideBetterRatio)) return r1;
+  // マグニチュードは、広域パスの一様な重みだと、遠方の(検知時の震度が小さい)観測点に引きずられて
+  // 小さく出る。位置・深さは広域パスの結果を使い、Mは通常パスと同じ重み・観測点で求め直す。
+  let first = dets[0];
+  for (const d of dets) if (d.detectedAt < first.detectedAt) first = d;
+  let firstDistKm = null;
+  for (const d of dets) {
+    if (d === first) continue;
+    const dist = haversineKm(first.lat, first.lon, d.lat, d.lon);
+    if (firstDistKm == null || dist < firstDistKm) firstDistKm = dist;
+  }
+  if (firstDistKm == null || firstDistKm <= 0) firstDistKm = NEAR_STATION_FIXED_WEIGHT_RADIUS_KM;
+  const near = selectNearestDetections(dets, [{ lat: first.lat, lon: first.lon }], first);
+  const nearWeights = new Map(near.map(d => [d.id, weightForDistance(haversineKm(first.lat, first.lon, d.lat, d.lon), firstDistKm)]));
+  const mf = fitMagnitude({ lat: r2.lat, lon: r2.lon, depthKm: r2.depthKm }, near, nearWeights, FINAL_MAGNITUDE_CANDIDATES);
+  const magnitude = mf ? mf.magnitude : r2.magnitude;
+  const atBound = mf ? (mf.magnitude <= MAGNITUDE_MIN + 1e-9 || mf.magnitude >= MAGNITUDE_MAX - 1e-9) : false;
+  const bound = mf ? (mf.magnitude <= MAGNITUDE_MIN + 1e-9 ? 'low' : mf.magnitude >= MAGNITUDE_MAX - 1e-9 ? 'high' : null) : null;
+  return { ...r2, pointCount: dets.length, widePass: true, magnitude, magnitudeAtBound: atBound, magnitudeBound: bound };
 }
