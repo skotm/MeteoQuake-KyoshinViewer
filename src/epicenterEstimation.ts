@@ -1100,8 +1100,11 @@ function estimateEpicenterCore(event, allStations, now, opts) {
   // 2度以内を探索する、と明記されており、単一観測点は複数点の平均に比べて
   // 系統的な偏りを持ちにくい。これに合わせ、常に最初に検知した観測点を
   // グリッド中心にする。
-  const gridCenterLat = Math.round(first.lat * 100) / 100;
-  const gridCenterLon = Math.round(first.lon * 100) / 100;
+  // グリッド方式の検知(gridDetection.ts)のイベントは、最初の観測点ではなく、最初に反応したセルの
+  // 早く反応した数点の重心(searchCenter)を探索の中心にする(最初の観測点が震央から遠い異常震域などで、
+  // 1点に引きずられないように)。既存の検知のイベントにはsearchCenterは無く、従来どおり。
+  const gridCenterLat = Math.round((event.searchCenter?.lat ?? first.lat) * 100) / 100;
+  const gridCenterLon = Math.round((event.searchCenter?.lon ?? first.lon) * 100) / 100;
 
   // firstDistKmの再定義: 以前は「グリッド中心(重心)から最初の観測点までの
   // 距離」だったが、グリッド中心=最初の観測点にしたため、この定義では常に

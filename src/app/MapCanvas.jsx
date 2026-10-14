@@ -2,6 +2,7 @@ import { MIN_INTENSITY as SHINDO_MIN_INTENSITY, intensityToShindoColor } from ".
 import { useRef, useState, useContext, useEffect } from "react";
 import { ShakeDetectionEngine } from "../shakeDetection";
 import { EpicenterEstimator } from "../epicenterEstimation";
+import { GridDetector } from "../gridDetection";
 import { P_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_P_WAVE_SPEED_KM_S, S_WAVE_SPEED_KM_S as EPICENTER_ESTIMATE_S_WAVE_SPEED_KM_S } from "../shakeTestSimulation";
 import { pickEewsToFocus } from "../eewCameraFocus";
 import { focusMapOnPoints } from "./mapFocus";
@@ -28,6 +29,9 @@ import { Glass } from "./glass";
    世界(world.json)・都道府県(prefectures.json)をベクターとして描画する。
    外部タイル・外部スタイルサーバーには依存しない。
    ───────────────────────────────────────────────────── */
+// 独立した地震の判定に推定を使うイベントの、検知点数の下限(gridDetectionのpendingMainMinPointsと同じ)。
+const GRID_INTERNAL_ESTIMATE_MIN_POINTS = 20;
+
 export function MapCanvas({
   onReady, stationPoints, hypocenters, isWide,
   quakeTimeStr, maxIntensityKey, estIntensityEnabled, areaFillEnabled,
@@ -68,6 +72,10 @@ export function MapCanvas({
   // 揺れ検知(shakeDetectionEnabled)自体がOFFの間は、推定に使う揺れ検知
   // イベントが発生しないため実質的に動作しない。
   epicenterEstimationEnabled = false,
+  // グリッド(セル)方式の揺れ検知(gridDetection.ts)のON/OFFと、セル枠の表示のON/OFF。
+  // 既存の揺れ検知とは独立に動き、併用して比較できる。
+  gridDetectionEnabled = false,
+  gridCellsVisible = true,
   // 信頼度が下限未満の震源推定も表示するか(設定。デフォルトOFF=表示しない)。
   showLowConfidenceEstimates = false,
   // 配列型の微弱検知(ごく弱い揺れの検知)を使うか(設定。デフォルトON)。
@@ -614,6 +622,25 @@ export function MapCanvas({
             map.getCanvas().style.cursor = "";
           });
 
+          // グリッド(セル)方式の揺れ検知(gridDetection.ts)のセル枠。枠の色は、
+          // セル内で観測した最大の震度の色(プロパティcolor。JS側で計算済み)。観測点の
+          // レイヤー(realtime-points-layer)より前に追加し、観測点の下に敷く。
+          map.addSource("grid-cells", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "grid-cells-line-layer",
+            type: "line",
+            source: "grid-cells",
+            layout: { visibility: "none", "line-join": "round" },
+            paint: {
+              "line-color": ["get", "color"],
+              "line-width": ["case", ["get", "fired"], 3, ["get", "hot"], 2, 1],
+              "line-opacity": ["case", ["get", "fired"], 1, ["get", "hot"], 0.85, 0.35],
+            },
+          });
+
           // 地震検知テスト(shakeTestSimulation.ts)の「正解」の震源。
           // 菱形(縁が黒い白い四角)で表示し、下で追加する震源推定の
           // マーカー(白丸黒縁)より先に追加する=描画順で下に敷く
@@ -731,6 +758,43 @@ export function MapCanvas({
             },
           });
 
+          // グリッド方式の検知の震源推定マーカー・ラベル。既存の推定(白丸・黒縁)と区別できるよう、
+          // 青い縁にしている。ラベルは、既存と同じ仕組み(eventIdごとのbitmap)を使う
+          // (グリッド方式のイベントidは1,000,000以上なので、既存のidと重ならない)。
+          map.addSource("grid-epicenter-estimates", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
+          map.addLayer({
+            id: "grid-epicenter-estimates-layer",
+            type: "circle",
+            source: "grid-epicenter-estimates",
+            layout: { visibility: "none" },
+            paint: {
+              "circle-radius": ["match", ["get", "level"], 0, 5, 1, 6, 2, 7, 8],
+              "circle-color": "#FFFFFF",
+              "circle-stroke-color": "#0A84FF",
+              "circle-stroke-width": ["match", ["get", "level"], 0, 2, 1, 2, 2, 2.5, 3],
+              "circle-opacity": ["match", ["get", "level"], 0, 0.25, 1, 0.4, 2, 0.65, 1],
+              "circle-stroke-opacity": ["match", ["get", "level"], 0, 0.25, 1, 0.4, 2, 0.65, 1],
+            },
+          });
+          map.addLayer({
+            id: "grid-epicenter-estimates-label-layer",
+            type: "symbol",
+            source: "grid-epicenter-estimates",
+            layout: {
+              visibility: "none",
+              "icon-image": ["get", "labelIconId"],
+              "icon-anchor": "left",
+              "icon-offset": [12, 0],
+              "icon-size": 1,
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+            },
+            paint: { "icon-opacity": ["match", ["get", "level"], 0, 0.35, 1, 0.5, 2, 0.75, 1] },
+          });
+
           // 【対策: ラベルが表示されないバグの保険】通常はupdateEpicenterEstimateLabels
           // 側でsetDataより先にaddImageを済ませているため発生しないはずだが、
           // 万一タイミングがずれてepicenter-estimates-label-layerが
@@ -746,6 +810,11 @@ export function MapCanvas({
             let est = null;
             for (const [id, v] of lastEpicenterEstimatesRef.current || []) {
               if (String(id) === eventId) { est = v; break; }
+            }
+            if (!est) {
+              for (const [id, v] of lastGridEstimatesRef.current || []) {
+                if (String(id) === eventId) { est = v; break; }
+              }
             }
             if (!est) return;
             const imageData = drawEpicenterLabelCanvas(Math.round(est.depthKm), est.magnitude, est.confidence ?? null, est.magnitudeBound ?? null);
@@ -869,6 +938,8 @@ export function MapCanvas({
           // へ移動する。
           map.moveLayer("epicenter-estimates-layer");
           map.moveLayer("epicenter-estimates-label-layer");
+          map.moveLayer("grid-epicenter-estimates-layer");
+          map.moveLayer("grid-epicenter-estimates-label-layer");
 
           map.on("mouseenter", "epicenter-points-layer", () => {
             map.getCanvas().style.cursor = "pointer";
@@ -1153,7 +1224,21 @@ export function MapCanvas({
         showRealtimeMapLayers ? "visible" : "none"
       );
     }
-  }, [showRealtimeMapLayers, epicenterEstimationEnabled, status]);
+    // グリッド方式の検知: セル枠は「グリッド検知」ON+「枠を表示」ON、震源推定マーカー・ラベルは
+    // 「グリッド検知」ON+「震源推定」ONの間だけ出す。
+    for (const layerId of ["grid-cells-line-layer"]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, "visibility",
+          showRealtimeMapLayers && gridDetectionEnabled && gridCellsVisible ? "visible" : "none");
+      }
+    }
+    for (const layerId of ["grid-epicenter-estimates-layer", "grid-epicenter-estimates-label-layer"]) {
+      if (map.getLayer(layerId)) {
+        map.setLayoutProperty(layerId, "visibility",
+          showRealtimeMapLayers && gridDetectionEnabled && epicenterEstimationEnabled ? "visible" : "none");
+      }
+    }
+  }, [showRealtimeMapLayers, epicenterEstimationEnabled, gridDetectionEnabled, gridCellsVisible, status]);
 
   // 地震検知テストの「正解」の震源(shakeTestTrueEpicenters、複数同時実行に
   // 対応)が変わるたびに、菱形マーカー用のsourceを更新する。tickごとに
@@ -1202,6 +1287,26 @@ export function MapCanvas({
   const epicenterEstimatorRef = useRef(null);
   if (!epicenterEstimatorRef.current) epicenterEstimatorRef.current = new EpicenterEstimator();
 
+  // グリッド(セル)方式の検知(gridDetection.ts)本体と、そのイベント用の震源推定。既存の検知・推定とは
+  // 別のインスタンス(キャッシュ・内部状態を共有しない)。
+  const gridEngineRef = useRef(null);
+  const gridInternalEstRef = useRef(null);
+  if (!gridEngineRef.current) gridEngineRef.current = new GridDetector();
+  const gridEstimatorRef = useRef(null);
+  if (!gridEstimatorRef.current) gridEstimatorRef.current = new EpicenterEstimator();
+  const gridLabelCacheRef = useRef(null);
+  const lastGridEstimatesRef = useRef(new Map());
+  const lastGridResultRef = useRef(null);
+  const lastGridValuesRef = useRef(null);
+  const prevGridEnabledRef = useRef(false);
+  const shownGridEstimateIdsRef = useRef(new Set());
+  useEffect(() => {
+    if (realtimeStations.length === 0) return;
+    gridEngineRef.current.initialize(realtimeStations);
+    lastGridResultRef.current = null;
+    lastGridValuesRef.current = null;
+  }, [realtimeStations]);
+
   // 推定深さ・推定Mラベル(updateEpicenterEstimateLabels参照)の、
   // eventIdごとに前回登録した内容のキャッシュ。
   const epicenterLabelCacheRef = useRef(null);
@@ -1223,6 +1328,10 @@ export function MapCanvas({
   // 設定の切り替えを、実行中のエンジンへ反映する
   useEffect(() => {
     shakeEngineRef.current.setWeakArrayEnabled(weakArrayDetectionEnabled);
+  }, [weakArrayDetectionEnabled]);
+  // グリッド検知の発火に必要な震度の水準も、微弱検知の設定に連動させる。
+  useEffect(() => {
+    gridEngineRef.current?.setWeakEnabled(weakArrayDetectionEnabled);
   }, [weakArrayDetectionEnabled]);
 
   // 【データ源切り替え対策】揺れ検知エンジンへ渡している震度値の出どころ。
@@ -1355,7 +1464,10 @@ export function MapCanvas({
     // 直近1tick前(最大500ms前)の判定結果(lastShakeEventsRef.current)を
     // 参照することになるが、見た目のズレとしては無視できるレベルなので
     // 許容する。
-    const detectedStationIds = buildDetectedStationIdSet(lastShakeEventsRef.current);
+    // グリッド検知がONの間は、検知済み観測点の黒い縁取りは付けない(処理が重くなるため)。
+    const detectedStationIds = gridDetectionEnabled
+      ? new Set()
+      : buildDetectedStationIdSet(lastShakeEventsRef.current);
     const features = realtimeStations
       .filter((s) => realtimeValues.has(s.id) && realtimeValues.get(s.id) >= realtimeIntensityThreshold)
       .map((s) => {
@@ -1424,6 +1536,11 @@ export function MapCanvas({
       shakeEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
       epicenterEstimatorRef.current.reset();
       lastEpicenterEstimatesRef.current = new Map();
+      gridEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+      gridEstimatorRef.current.reset();
+      lastGridEstimatesRef.current = new Map();
+      lastGridResultRef.current = null;
+      lastGridValuesRef.current = null;
     } else if (replayActive && replayDataTimeMs != null && prevEngineNow != null) {
       // リプレイのシーク・巻き戻し・再生し直し(データ時刻が戻る、または5秒超
       // 飛ぶ)では、それまでの検知を持ち越さずリセットする。
@@ -1433,6 +1550,11 @@ export function MapCanvas({
         shakeEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
         epicenterEstimatorRef.current.reset();
         lastEpicenterEstimatesRef.current = new Map();
+        gridEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+        gridEstimatorRef.current.reset();
+        lastGridEstimatesRef.current = new Map();
+        lastGridResultRef.current = null;
+        lastGridValuesRef.current = null;
       }
     }
     // 【震度しきい値などの操作で検知が乱れる問題の対策】このeffectは、新しい
@@ -1478,7 +1600,8 @@ export function MapCanvas({
     // 実際にある時だけ呼ぶ。EpicenterEstimator側で「検知点数(pointCount)が
     // 変化したイベントだけ再計算する」キャッシュを持っているので、ここでは
     // 単純に毎tick呼んでよい。
-    if (epicenterEstimationEnabled) {
+    // グリッド方式の検知がONの間は、通常の震源推定は動かさない(重いため)。グリッド方式の推定のみ表示する。
+    if (epicenterEstimationEnabled && !gridDetectionEnabled) {
       const estimates = shakeEvents.length > 0
         ? epicenterEstimatorRef.current.updateAll(shakeEvents, realtimeStations, engineNow)
         : new Map();
@@ -1526,8 +1649,93 @@ export function MapCanvas({
       // (updateEpicenterEstimateLabelsの「存在しないeventIdは掃除する」
       // ロジックを、空のMapを渡すことで流用する)。
       updateEpicenterEstimateLabels(map, new Map(), epicenterLabelCacheRef);
+      const normalEpicenterSource = map.getSource("epicenter-estimates");
+      if (normalEpicenterSource) normalEpicenterSource.setData({ type: "FeatureCollection", features: [] });
     }
-  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, showLowConfidenceEstimates, realtimeSourceMode, replayActive, replayDataTimeMs, isWide, cameraSettings]);
+
+    // グリッド(セル)方式の検知(gridDetection.ts)。既存の検知とは独立に、同じ震度値を渡す。
+    // 設定がONの間だけ動かす。ONにした直後は、古い状態を持ち越さないようリセットする。
+    const gridSource = map.getSource("grid-cells");
+    const gridEpicenterSource = map.getSource("grid-epicenter-estimates");
+    if (gridDetectionEnabled) {
+      if (!prevGridEnabledRef.current) {
+        gridEngineRef.current.resetForSourceChange(engineNow, SOURCE_CHANGE_DETECTION_SUPPRESS_MS);
+        gridEstimatorRef.current.reset();
+        lastGridResultRef.current = null;
+        lastGridValuesRef.current = null;
+        gridInternalEstRef.current = null;
+      }
+      prevGridEnabledRef.current = true;
+      const gridUnchanged = lastGridResultRef.current != null && lastGridValuesRef.current === realtimeValues;
+      const gridResult = gridUnchanged
+        ? lastGridResultRef.current
+        : gridEngineRef.current.processTick(realtimeValues, engineNow);
+      lastGridResultRef.current = gridResult;
+      lastGridValuesRef.current = realtimeValues;
+      if (gridSource && showRealtimeMapLayers && gridCellsVisible) {
+        const scheme = colorSchemeRef.current;
+        const cellFeatures = [];
+        // 検知が起きたセル(発火中、またはイベントに属するセル)だけ枠を表示する。
+        // 静音時は該当するセルが無いので、何も表示しない。
+        for (const c of gridResult.cells) {
+          if (c.dataCount === 0) continue;
+          if (!c.fired && c.eventId == null) continue;
+          const key = intensityValueToKey(c.maxIntensity);
+          const color = (scheme.colors[key] || scheme.colors["0"]).bg;
+          cellFeatures.push({
+            type: "Feature",
+            geometry: { type: "Polygon", coordinates: [[
+              [c.minLon, c.minLat], [c.maxLon, c.minLat], [c.maxLon, c.maxLat], [c.minLon, c.maxLat], [c.minLon, c.minLat],
+            ]] },
+            properties: { color, fired: c.fired, hot: c.maxIntensity != null && c.maxIntensity >= 0.5 },
+          });
+        }
+        gridSource.setData({ type: "FeatureCollection", features: cellFeatures });
+      }
+      // 震源推定は、表示(「震源推定」ON)の有無にかかわらず、グリッド方式の検知がONの間は常に行う
+      // (独立した別の地震かどうかの判定に、推定を使うため)。結果は、次のtickの判定へ返す。
+      // 「震源推定」の表示がOFFの間は、判定に使う大きなイベント(20点以上)だけを、3秒おきに推定する(負荷を抑えるため)。
+      let gridEstimates;
+      if (epicenterEstimationEnabled) {
+        gridEstimates = gridResult.events.length > 0
+          ? gridEstimatorRef.current.updateAll(gridResult.events, realtimeStations, engineNow)
+          : new Map();
+        gridInternalEstRef.current = { at: engineNow, map: gridEstimates };
+      } else {
+        const cached = gridInternalEstRef.current;
+        if (cached && engineNow >= cached.at && engineNow - cached.at < 3000) {
+          gridEstimates = cached.map;
+        } else {
+          const big = gridResult.events.filter((e) => e.pointCount >= GRID_INTERNAL_ESTIMATE_MIN_POINTS);
+          gridEstimates = big.length > 0 ? gridEstimatorRef.current.updateAll(big, realtimeStations, engineNow) : new Map();
+          gridInternalEstRef.current = { at: engineNow, map: gridEstimates };
+        }
+      }
+      gridEngineRef.current.setExternalEstimates(gridEstimates);
+      if (epicenterEstimationEnabled) {
+        const confident = filterEstimatesByConfidence(gridEstimates, showLowConfidenceEstimatesRef.current, shownGridEstimateIdsRef.current);
+        const gridDisplay = filterEstimatesNearEew(confident, eewsRef.current);
+        lastGridEstimatesRef.current = gridDisplay;
+        updateEpicenterEstimateLabels(map, gridDisplay, gridLabelCacheRef);
+        if (gridEpicenterSource) {
+          gridEpicenterSource.setData({ type: "FeatureCollection", features: buildEpicenterEstimateFeatures(gridDisplay) });
+        }
+      } else {
+        lastGridEstimatesRef.current = new Map();
+        updateEpicenterEstimateLabels(map, new Map(), gridLabelCacheRef);
+        if (gridEpicenterSource) gridEpicenterSource.setData({ type: "FeatureCollection", features: [] });
+      }
+    } else if (prevGridEnabledRef.current) {
+      prevGridEnabledRef.current = false;
+      lastGridResultRef.current = null;
+      lastGridValuesRef.current = null;
+      lastGridEstimatesRef.current = new Map();
+      gridEstimatorRef.current.reset();
+      updateEpicenterEstimateLabels(map, new Map(), gridLabelCacheRef);
+      if (gridSource) gridSource.setData({ type: "FeatureCollection", features: [] });
+      if (gridEpicenterSource) gridEpicenterSource.setData({ type: "FeatureCollection", features: [] });
+    }
+  }, [realtimeStations, realtimeValues, status, showRealtimeMapLayers, realtimeIntensityThreshold, realtimeRisingEnabled, replayJmaColorEnabled, shakeDetectionEnabled, epicenterEstimationEnabled, gridDetectionEnabled, gridCellsVisible, showLowConfidenceEstimates, realtimeSourceMode, replayActive, replayDataTimeMs, isWide, cameraSettings]);
 
   // 緊急地震速報: P波・S波の伝播円と震源マーカーをリアルタイムに更新する。
   // eews自体は1秒間隔のstate更新(App側の生存タイマー)にしか追従しないため、

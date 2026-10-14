@@ -831,7 +831,7 @@ function canEventsShareOrigin(a, b, params) {
 // 窓に入っているかで、同じ地震の波が届いたものかを判定する。窓に入る観測点の割合が
 // mergeTravelTimeInWindowRatio以上なら、物理的に同じ地震とみなして統合する。
 // (別の地震の観測点群は、検知時刻が主震の窓に収まる確率が低い)
-function pAndSTravelSec(epicentralKm, depthKm) {
+export function pAndSTravelSec(epicentralKm, depthKm) {
   const t = lookupJmaTravelTime(getJmaTravelTimeTable(), epicentralKm, depthKm);
   if (t && t.sTimeSec != null) return [t.pTimeSec, t.sTimeSec];
   const hypoKm = Math.hypot(epicentralKm, depthKm);
@@ -843,7 +843,7 @@ function pAndSTravelSec(epicentralKm, depthKm) {
 // 主イベントの震源から平面的に伝わる波なので、クラスターの内側に震源を置いても、到達時刻の並びを説明できない。
 // 検知は、真のP波到達より「遅れる」ことはあっても「早まる」ことはほぼ無いので、非対称のロバスト誤差を使う
 // (発生時刻は残差の下位25%点、それより早い側は4倍の重み、遅い側は1点あたりindepCapSecで頭打ち)。
-function independentSourceFit(ev, params) {
+export function independentSourceFit(ev, params) {
   const cache = ev._indepFit;
   if (cache && Math.abs(cache.n - ev.pointCount) < 3) return cache.fit;
   const all = [...ev.detectionTimes.values()];
@@ -908,7 +908,7 @@ function flatTimeCost(ev, params) {
   for (const x of t) sum += Math.min((x - o) * (x - o), cap2);
   return sum / t.length;
 }
-function looksIndependent(ev, mainEst, params) {
+export function looksIndependent(ev, mainEst, params) {
   if (!params.indepEnabled) return false;
   const fit = independentSourceFit(ev, params);
   if (!fit) return false;

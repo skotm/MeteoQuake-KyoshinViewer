@@ -3,7 +3,7 @@ import { ESTIMATE_MIN_DISPLAY_CONFIDENCE } from "../epicenterConfidence";
 import { EMPTY_EQDB_LIST } from "./eqdb";
 import { GlassOpaqueContext } from "./glass";
 import { ThemeContext } from "./theme";
-import { SETTINGS_ITEMS, SETTINGS_MENU, SettingsCard, SettingsCardDivider, SettingsHeader, SettingsMenuRow, SettingsToggleRow, TAB_SETTINGS_CATEGORIES } from "./settingsPrimitives";
+import { SETTINGS_ITEMS, SETTINGS_MENU, SettingsCard, SettingsCardDivider, SettingsHeader, SettingsMenuRow, SettingsSegmentRow, SettingsToggleRow, TAB_SETTINGS_CATEGORIES } from "./settingsPrimitives";
 import { APP_VERSION } from "./consent";
 import { BoundaryLineColorSettings, LicenseFileCard, LogViewerPanel, MarkdownFileCard, QuakeColorSchemeSettings, QuakeFetchLimitSettings, StationListDisplayModeSettings } from "./settingsPanels";
 import { EewTestBroadcastPanel, QuakeTestBroadcastPanel, ShakeDetectionTestPanel, TsunamiTestBroadcastPanel } from "./testPanels";
@@ -29,6 +29,7 @@ export function SettingsBody({
   shakeDetectionEnabled, onChangeShakeDetectionEnabled,
   weakArrayDetectionEnabled, onChangeWeakArrayDetectionEnabled,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
+  gridDetectionEnabled = false, onChangeGridDetectionEnabled = () => {}, gridCellsVisible = true, onChangeGridCellsVisible = () => {},
   showLowConfidenceEstimates, onChangeShowLowConfidenceEstimates,
   cameraSettings = DEFAULT_CAMERA_SETTINGS, onChangeCameraSettings = () => {},
   testTsunami, onBroadcastTestTsunami, onCancelTestTsunami, onClearTestTsunami,
@@ -245,24 +246,45 @@ export function SettingsBody({
             checked={shakeDetectionEnabled}
             onChange={() => onChangeShakeDetectionEnabled(!shakeDetectionEnabled)}
           />
-          <SettingsToggleRow
-            label="微弱な揺れの検知(実験的機能)"
-            description="震度0未満〜0付近の、ごく弱い揺れ(沖合の無感地震など)を、複数の観測点がP波の伝わる順序で上昇したことから検知します。誤検知が気になる場合は、オフにしてください。「地震検知」がONの間のみ動作します。"
-            checked={weakArrayDetectionEnabled}
-            onChange={() => onChangeWeakArrayDetectionEnabled(!weakArrayDetectionEnabled)}
-          />
-          <SettingsToggleRow
-            label="震源推定(実験的機能)"
-            description="緊急地震速報が出ない小さな地震でも、地震検知の結果から震央のおおよその位置を推定して地図上に×印で表示します。検知点数が少ないうちは精度が低く、位置が大きくぶれることがあります。「地震検知」がONの間のみ動作します。"
-            checked={epicenterEstimationEnabled}
-            onChange={() => onChangeEpicenterEstimationEnabled(!epicenterEstimationEnabled)}
-          />
-          <SettingsToggleRow
-            label="信頼度の低い推定を表示"
-            description={`震源推定の信頼度(推定Mの右に表示される0.00〜1.00の数値)が${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定も表示します。オフの間は、${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定を表示しません。「震源推定」がONの間のみ動作します。`}
-            checked={showLowConfidenceEstimates}
-            onChange={() => onChangeShowLowConfidenceEstimates(!showLowConfidenceEstimates)}
-          />
+          {shakeDetectionEnabled && (
+            <>
+              <SettingsSegmentRow
+                label="検知方式(実験的機能)"
+                description="揺れの検知方式を選びます。「個別観測点検知」は従来の方式です。「グリッド検知」は、地図を緯度経度のセルに分けてセルごとに検知する方式で、同じ時期に離れた場所で起きた地震を別々に検知しやすくなります。グリッド検知では、震源推定もグリッド検知の結果に対してのみ行います。"
+                value={gridDetectionEnabled ? "grid" : "station"}
+                options={[{ value: "station", label: "個別観測点検知" }, { value: "grid", label: "グリッド検知" }]}
+                onChange={(v) => onChangeGridDetectionEnabled(v === "grid")}
+              />
+              {gridDetectionEnabled && (
+                <SettingsToggleRow
+                  label="グリッドの枠を表示"
+                  description="検知が起きたセルの枠を、地図上に表示します。検知が起きていない間は表示しません。"
+                  checked={gridCellsVisible}
+                  onChange={() => onChangeGridCellsVisible(!gridCellsVisible)}
+                />
+              )}
+              <SettingsToggleRow
+                label="微弱な揺れの検知(実験的機能)"
+                description="震度0未満〜0付近の、ごく弱い揺れ(沖合の無感地震など)を、複数の観測点がP波の伝わる順序で上昇したことから検知します。誤検知が気になる場合は、オフにしてください。"
+                checked={weakArrayDetectionEnabled}
+                onChange={() => onChangeWeakArrayDetectionEnabled(!weakArrayDetectionEnabled)}
+              />
+              <SettingsToggleRow
+                label="震源推定(実験的機能)"
+                description="緊急地震速報が出ない小さな地震でも、地震検知の結果から震央のおおよその位置を推定して地図上に表示します。検知点数が少ないうちは精度が低く、位置が大きくぶれることがあります。"
+                checked={epicenterEstimationEnabled}
+                onChange={() => onChangeEpicenterEstimationEnabled(!epicenterEstimationEnabled)}
+              />
+              {epicenterEstimationEnabled && (
+                <SettingsToggleRow
+                  label="信頼度の低い推定を表示"
+                  description={`震源推定の信頼度(推定Mの右に表示される0.00〜1.00の数値)が${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定も表示します。オフの間は、${ESTIMATE_MIN_DISPLAY_CONFIDENCE.toFixed(2)}未満の推定を表示しません。`}
+                  checked={showLowConfidenceEstimates}
+                  onChange={() => onChangeShowLowConfidenceEstimates(!showLowConfidenceEstimates)}
+                />
+              )}
+            </>
+          )}
           <SettingsToggleRow
             label="震度上昇中を表示"
             description="強震モニタの観測点のうち、前回の更新時点より震度が上昇した観測点を黄色、それ以外を震度-3相当の青色で表示します。"
