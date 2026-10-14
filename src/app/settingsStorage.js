@@ -457,3 +457,46 @@ export function saveCameraSettings(settings) {
     console.warn("カメラの動きの設定を保存できませんでした:", err);
   }
 }
+
+/* ─────────────────────────────────────────────────────
+   グリッド(セル)方式の揺れ検知(gridDetection.ts)のON/OFFと、セル枠の表示のON/OFF。
+   既存の揺れ検知(shakeDetectionEnabled)とは独立に、併用して比較できる。
+   検知はデフォルトOFF、セル枠の表示はデフォルトON(検知をONにした人が、すぐ見られるように)。
+   ───────────────────────────────────────────────────── */
+const GRID_DETECTION_ENABLED_STORAGE_KEY = "gridDetectionEnabled";
+const GRID_CELLS_VISIBLE_STORAGE_KEY = "gridCellsVisible";
+
+function loadStoredBool(key, fallback, label) {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved === "true") return true;
+    if (saved === "false") return false;
+  } catch (err) {
+    console.warn(`${label}の設定を読み込めませんでした:`, err);
+  }
+  return fallback;
+}
+
+function saveStoredBool(key, value, label) {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch (err) {
+    console.warn(`${label}の設定を保存できませんでした:`, err);
+  }
+}
+
+export function loadStoredGridDetectionEnabled() {
+  return loadStoredBool(GRID_DETECTION_ENABLED_STORAGE_KEY, false, "グリッド検知");
+}
+
+export function saveGridDetectionEnabled(enabled) {
+  saveStoredBool(GRID_DETECTION_ENABLED_STORAGE_KEY, enabled, "グリッド検知");
+}
+
+export function loadStoredGridCellsVisible() {
+  return loadStoredBool(GRID_CELLS_VISIBLE_STORAGE_KEY, true, "グリッド枠の表示");
+}
+
+export function saveGridCellsVisible(visible) {
+  saveStoredBool(GRID_CELLS_VISIBLE_STORAGE_KEY, visible, "グリッド枠の表示");
+}

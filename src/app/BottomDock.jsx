@@ -66,6 +66,7 @@ export function BottomDock({
   weakArrayDetectionEnabled, onChangeWeakArrayDetectionEnabled,
   cameraSettings, onChangeCameraSettings,
   epicenterEstimationEnabled, onChangeEpicenterEstimationEnabled,
+  gridDetectionEnabled, onChangeGridDetectionEnabled, gridCellsVisible, onChangeGridCellsVisible,
   showLowConfidenceEstimates, onChangeShowLowConfidenceEstimates,
   shakeEvents = EMPTY_EQDB_LIST,
   realtimeDataTime,
@@ -1671,6 +1672,10 @@ export function BottomDock({
                   onChangeCameraSettings={onChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={onChangeEpicenterEstimationEnabled}
+                  gridDetectionEnabled={gridDetectionEnabled}
+                  onChangeGridDetectionEnabled={onChangeGridDetectionEnabled}
+                  gridCellsVisible={gridCellsVisible}
+                  onChangeGridCellsVisible={onChangeGridCellsVisible}
                   showLowConfidenceEstimates={showLowConfidenceEstimates}
                   onChangeShowLowConfidenceEstimates={onChangeShowLowConfidenceEstimates}
                   testTsunami={testTsunami}

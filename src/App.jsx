@@ -10,7 +10,7 @@ import { Filters, LAYERS } from "./app/navigation";
 import { useIsStandalonePwa, useIsWideLayout, useWideUIScale } from "./app/layoutHooks";
 import { Glass, GlassOpaqueContext, PressableButton, detectSuspectedBackdropFilterBreakage, loadGlassOpaqueOverride, saveGlassOpaqueOverride } from "./app/glass";
 import { THEME_TOKENS, ThemeContext, loadStoredThemeModePref, saveThemeModePref, useSystemThemeMode } from "./app/theme";
-import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredShowLowConfidenceEstimates, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredWeakArrayDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveShowLowConfidenceEstimates, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveWeakArrayDetectionEnabled, saveStationListDisplayMode, loadStoredCameraSettings, saveCameraSettings } from "./app/settingsStorage";
+import { clampQuakeFetchLimit, loadStoredAreaFillEnabled, loadStoredBoundaryLineColorId, loadStoredEpicenterCirclesEnabled, loadStoredEpicenterEstimationEnabled, loadStoredShowLowConfidenceEstimates, loadStoredEstIntensityEnabled, loadStoredExperimentalFeaturesEnabled, loadStoredFaultsEnabled, loadStoredPlateBoundariesEnabled, loadStoredQuakeFetchLimit, loadStoredRealtimeIntensityThreshold, loadStoredRealtimeRisingEnabled, loadStoredReplayJmaColorEnabled, loadStoredShakeDetectionEnabled, loadStoredGridDetectionEnabled, loadStoredGridCellsVisible, saveGridDetectionEnabled, saveGridCellsVisible, loadStoredWeakArrayDetectionEnabled, loadStoredStationListDisplayMode, saveAreaFillEnabled, saveBoundaryLineColorId, saveEpicenterCirclesEnabled, saveEpicenterEstimationEnabled, saveShowLowConfidenceEstimates, saveEstIntensityEnabled, saveExperimentalFeaturesEnabled, saveFaultsEnabled, savePlateBoundariesEnabled, saveQuakeFetchLimit, saveRealtimeIntensityThreshold, saveRealtimeRisingEnabled, saveReplayJmaColorEnabled, saveShakeDetectionEnabled, saveWeakArrayDetectionEnabled, saveStationListDisplayMode, loadStoredCameraSettings, saveCameraSettings } from "./app/settingsStorage";
 import { EEW_CANCEL_LINGER_MS, EEW_MAX_CONCURRENT, EEW_STALE_MS, connectQuakeWebSocket, connectWolfxEewWebSocket, fetchLatestFreshEew, fetchLatestFreshEewFromWolfx } from "./app/liveFeeds";
 import { loadGeoData, loadTsunamiAreasData } from "./app/mapDataLoaders";
 import { buildTestQuakeStageCard, calcTestEewAreasByAttenuation, isTestWarnLevel } from "./app/testSimulation";
@@ -282,6 +282,19 @@ export default function App() {
   function handleChangeEpicenterEstimationEnabled(next) {
     setEpicenterEstimationEnabledState(next);
     saveEpicenterEstimationEnabled(next);
+  }
+
+  // グリッド(セル)方式の揺れ検知(gridDetection.ts)のON/OFFと、セル枠の表示のON/OFF。
+  // 既存の揺れ検知と併用でき、震源推定(ONの間)も、それぞれの検知結果に対して行う。
+  const [gridDetectionEnabled, setGridDetectionEnabledState] = useState(loadStoredGridDetectionEnabled);
+  const [gridCellsVisible, setGridCellsVisibleState] = useState(loadStoredGridCellsVisible);
+  function handleChangeGridDetectionEnabled(next) {
+    setGridDetectionEnabledState(next);
+    saveGridDetectionEnabled(next);
+  }
+  function handleChangeGridCellsVisible(next) {
+    setGridCellsVisibleState(next);
+    saveGridCellsVisible(next);
   }
 
   // 震源推定の最新結果(Map<eventId, estimateEpicenter()の戻り値>)。MapCanvas
@@ -2294,6 +2307,8 @@ export default function App() {
           cameraSettings={cameraSettings}
           onShakeEventsChange={setShakeEvents}
           epicenterEstimationEnabled={epicenterEstimationEnabled}
+          gridDetectionEnabled={shakeDetectionEnabled && gridDetectionEnabled}
+          gridCellsVisible={gridCellsVisible}
           showLowConfidenceEstimates={showLowConfidenceEstimates}
           onEpicenterEstimateChange={setEpicenterEstimates}
           shakeTestTrueEpicenters={shakeTestTrueEpicenters}
@@ -2600,6 +2615,10 @@ export default function App() {
                   onChangeCameraSettings={handleChangeCameraSettings}
                   epicenterEstimationEnabled={epicenterEstimationEnabled}
                   onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
+                  gridDetectionEnabled={gridDetectionEnabled}
+                  onChangeGridDetectionEnabled={handleChangeGridDetectionEnabled}
+                  gridCellsVisible={gridCellsVisible}
+                  onChangeGridCellsVisible={handleChangeGridCellsVisible}
                   showLowConfidenceEstimates={showLowConfidenceEstimates}
                   onChangeShowLowConfidenceEstimates={handleChangeShowLowConfidenceEstimates}
                   shakeEvents={shakeEvents}
@@ -2718,6 +2737,10 @@ export default function App() {
               onChangeCameraSettings={handleChangeCameraSettings}
               epicenterEstimationEnabled={epicenterEstimationEnabled}
               onChangeEpicenterEstimationEnabled={handleChangeEpicenterEstimationEnabled}
+              gridDetectionEnabled={gridDetectionEnabled}
+              onChangeGridDetectionEnabled={handleChangeGridDetectionEnabled}
+              gridCellsVisible={gridCellsVisible}
+              onChangeGridCellsVisible={handleChangeGridCellsVisible}
               showLowConfidenceEstimates={showLowConfidenceEstimates}
               onChangeShowLowConfidenceEstimates={handleChangeShowLowConfidenceEstimates}
               shakeEvents={shakeEvents}

@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useState } from "react";
 import { ThemeContext } from "./theme";
 import { PressableButton } from "./glass";
 import { Toggle } from "./navUi";
@@ -108,22 +108,95 @@ export function SettingsMenuRow({ label, onClick }) {
 
 // カード内の1行(ON/OFF切り替え用)。SettingsMenuRowと同じ余白・見た目で、
 // 右端は「>」の代わりに丸いスイッチ(Toggle)を出す。
-export function SettingsToggleRow({ label, description, checked, onChange, disabled = false }) {
+// 設定名の右に出す「ⓘ」ボタン。タップすると、説明文の吹き出しを開閉する。
+function InfoTipButton({ open, onToggle }) {
   const { tokens } = useContext(ThemeContext);
+  return (
+    <button
+      type="button"
+      aria-label="説明を表示"
+      aria-expanded={open}
+      onClick={(e) => { e.stopPropagation(); onToggle(); }}
+      style={{
+        flex: "none", width: 20, height: 20, padding: 0, marginLeft: 6,
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        background: "transparent", border: "none", cursor: "pointer",
+        color: open ? tokens.text : tokens.textTertiary,
+      }}
+    >
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <circle cx="12" cy="12" r="9.5"/>
+        <line x1="12" y1="11" x2="12" y2="16.5"/>
+        <circle cx="12" cy="7.6" r="0.6" fill="currentColor"/>
+      </svg>
+    </button>
+  );
+}
+
+function InfoTipBubble({ children }) {
+  const { tokens } = useContext(ThemeContext);
+  return (
+    <div role="tooltip" style={{
+      marginTop: 6, padding: "8px 10px", borderRadius: 8,
+      background: tokens.cardBorder, color: tokens.text,
+      fontSize: 12, lineHeight: 1.5,
+    }}>
+      {children}
+    </div>
+  );
+}
+
+// 名前+ⓘ(タップで説明)の見出し部分。
+function LabelWithTip({ label, description }) {
+  const { tokens } = useContext(ThemeContext);
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: tokens.text }}>{label}</span>
+        {description && <InfoTipButton open={open} onToggle={() => setOpen(o => !o)}/>}
+      </div>
+      {description && open && <InfoTipBubble>{description}</InfoTipBubble>}
+    </div>
+  );
+}
+
+export function SettingsToggleRow({ label, description, checked, onChange, disabled = false }) {
   return (
     <div style={{
       width: "100%", display: "flex", alignItems: "center", gap: 10,
       padding: "12px 14px",
     }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: tokens.text }}>{label}</div>
-        {description && (
-          <div style={{ fontSize: 11, color: tokens.textSecondary, marginTop: 3, lineHeight: 1.4 }}>
-            {description}
-          </div>
-        )}
-      </div>
+      <LabelWithTip label={label} description={description}/>
       <Toggle on={checked} onChange={onChange} disabled={disabled}/>
+    </div>
+  );
+}
+
+// 選択肢から1つ選ぶ行(分割ボタン形式)。options: [{ value, label }]
+export function SettingsSegmentRow({ label, description, value, options, onChange }) {
+  const { tokens } = useContext(ThemeContext);
+  return (
+    <div style={{ width: "100%", padding: "12px 14px", boxSizing: "border-box" }}>
+      <LabelWithTip label={label} description={description}/>
+      <div style={{
+        display: "flex", marginTop: 8, borderRadius: 8, overflow: "hidden",
+        boxShadow: `inset 0 0 0 0.5px ${tokens.cardBorder}`,
+      }}>
+        {options.map((o) => {
+          const on = o.value === value;
+          return (
+            <button key={String(o.value)} type="button" onClick={() => onChange(o.value)}
+              style={{
+                flex: 1, padding: "7px 4px", border: "none", cursor: "pointer",
+                fontSize: 13, fontWeight: on ? 700 : 500,
+                background: on ? tokens.cardBorder : "transparent", color: tokens.text,
+              }}>
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
