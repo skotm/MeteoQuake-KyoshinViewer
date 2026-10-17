@@ -1,5 +1,5 @@
 import { maxScaleToIntensityKey, toQuakeCard } from "./quakeCards";
-import { intensityLabelToKey } from "./stationIcons";
+import { EEW_FILL_LEGEND_ORDER, intensityLabelToKey } from "./stationIcons";
 import { toTsunamiCard } from "./tsunamiData";
 
 
@@ -165,15 +165,23 @@ const WOLFX_EEW_HTTP_URL = "https://api.wolfx.jp/jma_eew.json";
 // Wolfxの1レコード(jma_eew)を、アプリ内で使う共通のEEWカード形式(toEewCardと
 // 同じ形)に変換する。WarnArea[]のShindo1/Shindo2・MaxIntensityは"5弱"のような
 // 表示用文字列で来るため、intensityLabelToKey()で内部キーへ変換する。
+// 震度キー2つのうち、強いほうを返す(変換できない"?"は弱い扱い)。
+function strongerIntensityKey(a, b) {
+  const rank = (k) => EEW_FILL_LEGEND_ORDER.indexOf(k);
+  return rank(b) > rank(a) ? b : a;
+}
+
 function toEewCardFromWolfx(data) {
   const areas = Array.isArray(data.WarnArea) ? data.WarnArea.map(a => ({
     pref: "", // Wolfxは都道府県単位を分けて返さないため空にしておく
     name: a.Chiiki || "",
     scaleFrom: null, // 内部的にはscaleコードではなくmaxIntensityKeyを直接使うため未使用
     scaleTo: null,
-    // Wolfxは震度を"5弱"のような表示用文字列で返してくる。Shindo2(上限側)を
-    // 優先し、無ければShindo1を使って内部キーへ変換する(P2P地震情報のscaleTo優先と同じ考え方)。
-    maxIntensityKey: intensityLabelToKey(a.Shindo2 || a.Shindo1),
+    // Wolfxは震度を"5弱"のような表示用文字列で返してくる。「震度○から震度△」の
+    // 上限側(to)を使いたいが、Shindo1/Shindo2のどちらが上限かは仕様上あいまい
+    // (公式ドキュメントはShindo1=最大・Shindo2=最小と書いている)ため、順序に頼らず、
+    // 2つのうち強いほうを使う(片方が"以上"などで変換できない時は、もう片方)。
+    maxIntensityKey: strongerIntensityKey(intensityLabelToKey(a.Shindo1), intensityLabelToKey(a.Shindo2)),
     isPlum: !!data.isAssumption,
   })) : [];
 
@@ -196,7 +204,8 @@ function toEewCardFromWolfx(data) {
     depth: typeof data.Depth === "number" && data.Depth >= 0 ? Math.round(data.Depth) : null,
     magnitude: typeof data.Magunitude === "number" && data.Magunitude > 0 ? data.Magunitude : null,
     areas,
-    maxIntensityKey: intensityLabelToKey(data.MaxIntensity),
+    // 最大震度。念のため、地域ごとの予測震度の最大とも突き合わせて、強いほうを使う。
+    maxIntensityKey: areas.reduce((m, a) => strongerIntensityKey(m, a.maxIntensityKey), intensityLabelToKey(data.MaxIntensity)),
     isPlum: !!data.isAssumption,
     source: "wolfx",
     // Wolfxは「最終報かどうか」を直接教えてくれる。第1報などisFinal:falseの間は
