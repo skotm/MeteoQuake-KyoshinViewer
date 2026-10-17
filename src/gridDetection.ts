@@ -38,6 +38,11 @@ export const DEFAULT_GRID_PARAMS = {
   minPeakCount: 2,              // 上の水準を超える反応中の観測点の必要数
   cellAvgSec: 10,               // セルの平均震度をとる秒数(起動から足りない間は、あるだけで平均する)
   cellBaselineSec: 30,          // 上昇量の基準にする、平均より前の平静時の秒数
+  earlyDropSec: 8,              // セル内の反応開始の中央付近より、これだけ早く反応した観測点(ノイズ反応)は、イベントの検知点に入れない(0で無効)
+  outlierRejectSec: 5,          // 推定に使う検知から、点震源のフィットに対しP波到達との差がこの秒数を超える点を除く(0で無効)
+  outlierMinKeep: 12,           // 除いたあとに残すべき点数の下限(下回る場合は除かない)
+  undetectedByData: false,      // 着未着法の未検知観測点を、「データがあり、反応していない」点に限る
+  undetectedNoTimeLimit: false, // 着未着法を、検知初期(3秒・30点)に限らず使い続ける
   cellRiseMin: 0.1,             // セルの10秒平均が、平静時の平均より上昇している量の下限(0で無効)
   smallCellMembers: 5,          // 観測点がこれ未満のセル(離島・海域など)は、比率で判定する
   smallCellMinActive: 2,
@@ -276,6 +281,7 @@ export class GridDetector {
     this.updateEvents(now);
 
     // 4) 出力
+    this.lastNow = now;
     return { events: this.buildEvents(), cells: this.buildCells() };
   }
 
@@ -510,6 +516,13 @@ export class GridDetector {
       const ev = this.events.get(c.eventId);
       if (!ev) continue;
       ev.updatedAt = now;
+      // セル内の反応中の観測点の、反応開始の下位30%点。これより earlyDropSec 以上早いものはノイズ反応として入れない。
+      let onsetFloor = -Infinity;
+      if (p.earlyDropSec > 0) {
+        const on = [];
+        for (const id of c.members) { const st = this.stations.get(id); if (this.isActive(st, now)) on.push(st.onsetAt); }
+        if (on.length >= 5) { on.sort((a, b) => a - b); onsetFloor = on[Math.floor((on.length - 1) * 0.3)] - p.earlyDropSec * 1000; }
+      }
       for (const id of c.members) {
         const st = this.stations.get(id);
         const d = ev.detections.get(id);
@@ -518,6 +531,7 @@ export class GridDetector {
           continue;
         }
         if (!this.isActive(st, now)) continue;
+        if (st.onsetAt < onsetFloor) continue;
         ev.detections.set(id, { id, lat: st.lat, lon: st.lon, detectedAt: st.onsetAt, intensity: st.latest, cellKey: c.key });
       }
     }
@@ -536,9 +550,50 @@ export class GridDetector {
     return { lat: lat / inCell.length, lon: lon / inCell.length };
   }
 
+  // 推定に使う検知点。outlierRejectSecが有効なら、点震源のフィットから見てP波の到達時刻と大きくずれた点(ノイズ反応など)を除く。
+  estimationDetections(ev, dets) {
+    const p = this.params;
+    if (!(p.outlierRejectSec > 0)) return dets;
+    const fit = this.usableFit(ev);
+    if (!fit) return dets;
+    const kept = dets.filter((d) => {
+      const epi = haversineKm(fit.lat, fit.lon, d.lat, d.lon);
+      const tp = pAndSTravelSec(epi, fit.depth)[0];
+      return Math.abs((d.detectedAt - fit.originMs) / 1000 - tp) <= p.outlierRejectSec;
+    });
+    return kept.length >= p.outlierMinKeep ? kept : dets;
+  }
+
+  // イベントのうち、最初に発火したセルの中心(検知一覧に出す、検知したグリッドの震央地名の判定に使う)。
+  // イベントに属するすべてのセル(検知一覧の震央地名のまとめ表示に使う)。
+  cellsOf(ev) {
+    const out = [];
+    for (const c of this.cells.values()) {
+      if (c.eventId === ev.id) out.push({ key: c.key, minLat: c.minLat, maxLat: c.maxLat, minLon: c.minLon, maxLon: c.maxLon });
+    }
+    return out;
+  }
+
+  originCellOf(ev) {
+    let best = null;
+    for (const c of this.cells.values()) {
+      if (c.eventId !== ev.id) continue;
+      if (!best || (c.firstOnset ?? Infinity) < (best.firstOnset ?? Infinity)) best = c;
+    }
+    return best ? { lat: (best.minLat + best.maxLat) / 2, lon: (best.minLon + best.maxLon) / 2, minLat: best.minLat, maxLat: best.maxLat, minLon: best.minLon, maxLon: best.maxLon, key: best.key } : null;
+  }
+
   buildEvents() {
     const p = this.params;
     const out = [];
+    // 着未着法用の未検知観測点: データがあり、反応していない観測点(全イベント共通。各イベントの検知点は推定側で除かれる)
+    let undetected = null;
+    if (p.undetectedByData) {
+      undetected = [];
+      for (const st of this.stations.values()) {
+        if (st.latest != null && !st.reacting && !this.isActive(st, this.lastNow)) undetected.push({ id: st.id, lat: st.lat, lon: st.lon });
+      }
+    }
     for (const ev of this.events.values()) {
       const dets = [...ev.detections.values()];
       if (dets.length < p.minEventPoints || ev.pending) continue;
@@ -553,6 +608,8 @@ export class GridDetector {
       const searchCenter = this.computeSearchCenter(ev);
       out.push({
         id: ev.id, source: "grid",
+        confirmed: true, // 出力するのは12点以上に育った、保留でないイベントだけ(検知一覧は confirmed のものだけを出す)
+        ...(undetected ? { undetectedStations: undetected, undetectedNoTimeLimit: p.undetectedNoTimeLimit } : {}),
         pointIds: dets.map((d) => d.id), pointCount: dets.length,
         centerLat: (minLat + maxLat) / 2, centerLon: (minLon + maxLon) / 2,
         minLat, maxLat, minLon, maxLon,
@@ -561,7 +618,9 @@ export class GridDetector {
         createdAt: ev.createdAt, updatedAt: ev.updatedAt,
         originLat: first.lat, originLon: first.lon, originDetectedAt: first.detectedAt,
         searchCenter,
-        detections: dets.map((d) => ({
+        gridCell: this.originCellOf(ev),
+        gridCells: this.cellsOf(ev),
+        detections: this.estimationDetections(ev, dets).map((d) => ({
           id: d.id, lat: d.lat, lon: d.lon, detectedAt: d.detectedAt,
           level: intensityToShakeLevel(d.intensity ?? 0, p.levelThresholds), intensity: d.intensity,
           sWaveDetectedAt: null,

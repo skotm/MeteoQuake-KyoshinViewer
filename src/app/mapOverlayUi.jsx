@@ -3,7 +3,7 @@ import { MIN_INTENSITY as SHINDO_MIN_INTENSITY, MAX_INTENSITY as SHINDO_MAX_INTE
 import { ThemeContext } from "./theme";
 import { QUAKE_COLOR_SCHEMES, QuakeColorSchemeContext, getIntensityStyleFromScheme } from "./colorSchemes";
 import { Glass, PressableButton } from "./glass";
-import { findSingleEpicenterPlace } from "./geo";
+import { findEpicenterNameByPoint, findSingleEpicenterPlace } from "./geo";
 import { loadEpicenterNamesData, loadGeoData } from "./mapDataLoaders";
 import { TSUNAMI_GRADE_INFO, tsunamiGradeInfo, tsunamiHeightBandGrade } from "./tsunamiData";
 
@@ -346,9 +346,51 @@ const SHAKE_LEVEL_ACCENTS = ["#FFC107", "#FFC107", "#FF9F0A", "#FF453A", "#FF453
 // 揺れ検知カードが最初に出る時に1回だけ読み込み、以後は使い回す(prefectures.jsonは
 // 地図が既に読み込んでおり、loadGeoDataのPromiseを共有するので追加の通信はない)。
 // 観測点IDごとの判定結果もキャッシュする。
+const gridCellSamplesCache = new Map();
+// セル(緯度経度の矩形)を格子状にサンプリングして、各点が属する震央地名の区域を調べる。
+// 結果 { points: [{id,lat,lon}], names: 区域名(重複なし) } はセルごとにキャッシュ。
+// 区域の面積が小さすぎて格子の間に入る場合は拾えない。
+function sampleCellRegions(epicenterNames, cell) {
+  const cached = gridCellSamplesCache.get(cell.key);
+  if (cached) return cached;
+  const N = 8;
+  const points = [];
+  const names = [];
+  for (let i = 0; i <= N; i++) {
+    for (let j = 0; j <= N; j++) {
+      const lat = cell.minLat + (cell.maxLat - cell.minLat) * ((i + 0.5) / (N + 1));
+      const lon = cell.minLon + (cell.maxLon - cell.minLon) * ((j + 0.5) / (N + 1));
+      points.push({ id: `${cell.key}:${i}_${j}`, lat, lon });
+      const name = findEpicenterNameByPoint(epicenterNames, lat, lon);
+      if (name && !names.includes(name)) names.push(name);
+    }
+  }
+  const r = { points, names };
+  gridCellSamplesCache.set(cell.key, r);
+  return r;
+}
+
+// グリッド検知のイベントの場所。イベントに属するすべてのセルの震央地名をまとめ、
+// 区域名が GRID_PLACE_MAX_NAMES(3)個以下ならすべて並べる。それより多ければ、通常の検知と同じく
+// 区域 → 都道府県 → 地方と広げて、まとめた名前にする(findSingleEpicenterPlace)。
+const GRID_PLACE_MAX_NAMES = 3;
+function gridEventPlaceName(geo, cells) {
+  if (!geo?.epicenterNames || !Array.isArray(cells) || cells.length === 0) return null;
+  const names = [];
+  const points = [];
+  for (const cell of cells) {
+    const r = sampleCellRegions(geo.epicenterNames, cell);
+    for (const n of r.names) if (!names.includes(n)) names.push(n);
+    points.push(...r.points);
+  }
+  if (names.length === 0) return null;
+  if (names.length <= GRID_PLACE_MAX_NAMES) return names.join("・");
+  return findSingleEpicenterPlace(geo, points, shakePlaceInfoCache)?.name ?? null;
+}
+
 let shakePlaceGeoCache = null;
 const shakePlaceInfoCache = new Map();
-function useShakeEventPlaceName(detections) {
+function useShakeEventPlaceName(detections, gridCells = null) {
   const [geo, setGeo] = useState(shakePlaceGeoCache);
   useEffect(() => {
     if (geo) return undefined;
@@ -362,12 +404,19 @@ function useShakeEventPlaceName(detections) {
     });
     return () => { alive = false; };
   }, [geo]);
-  return useMemo(() => findSingleEpicenterPlace(geo, detections, shakePlaceInfoCache)?.name ?? null, [geo, detections]);
+  return useMemo(() => {
+    if (gridCells) {
+      const name = gridEventPlaceName(geo, gridCells);
+      if (name) return name;
+    }
+    return findSingleEpicenterPlace(geo, detections, shakePlaceInfoCache)?.name ?? null;
+  }, [geo, detections, gridCells]);
 }
 
 export function ShakeEventCard({ event }) {
   const { tokens } = useContext(ThemeContext);
-  const place = useShakeEventPlaceName(event.detections);
+  const isGrid = event.source === "grid";
+  const place = useShakeEventPlaceName(event.detections, isGrid ? event.gridCells : null);
   const level = Math.min(Math.max(Number.isFinite(event.level) ? event.level : 0, 0), SHAKE_LEVEL_NOUNS.length - 1);
   const text = `${place ? `${place}で` : ""}${SHAKE_LEVEL_NOUNS[level]}を検出`;
   // 色は枠(border)だけに付ける。面は色を付けない通常のGlassにして、面ごと色付きの
@@ -381,10 +430,12 @@ export function ShakeEventCard({ event }) {
     <Glass radius={14} style={{ margin: "6px 16px 8px", border: `2px solid ${SHAKE_LEVEL_ACCENTS[level]}` }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, height: "100%", padding: "9px 14px" }}>
         <span style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 800, lineHeight: 1.3, color: tokens.text }}>{text}</span>
-        <span style={{ flexShrink: 0, display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: tokens.textSecondary }}>観測点数</span>
-          <span style={{ fontSize: 15, fontWeight: 800, color: tokens.text, fontVariantNumeric: "tabular-nums" }}>{event.pointCount}</span>
-        </span>
+        {!isGrid && (
+          <span style={{ flexShrink: 0, display: "flex", alignItems: "baseline", gap: 6, whiteSpace: "nowrap" }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: tokens.textSecondary }}>観測点数</span>
+            <span style={{ fontSize: 15, fontWeight: 800, color: tokens.text, fontVariantNumeric: "tabular-nums" }}>{event.pointCount}</span>
+          </span>
+        )}
       </div>
     </Glass>
   );

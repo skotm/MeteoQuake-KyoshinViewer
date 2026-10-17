@@ -633,7 +633,8 @@ export function MapCanvas({
             id: "grid-cells-line-layer",
             type: "line",
             source: "grid-cells",
-            layout: { visibility: "none", "line-join": "round" },
+            // line-sort-key: 値の大きいもの(=震度の大きい格子)ほど前面に描く。
+            layout: { visibility: "none", "line-join": "round", "line-sort-key": ["get", "sort"] },
             paint: {
               "line-color": ["get", "color"],
               "line-width": ["case", ["get", "fired"], 3, ["get", "hot"], 2, 1],
@@ -936,6 +937,8 @@ export function MapCanvas({
           // 重なる)により観測点の下に埋もれてしまっていた。観測点レイヤーの
           // 追加が終わったこの時点で、両レイヤーを最前面(スタックの一番上)
           // へ移動する。
+          // グリッドの枠は観測点より前面に出す(ただし震源推定のマーカー・ラベルよりは下)。
+          map.moveLayer("grid-cells-line-layer");
           map.moveLayer("epicenter-estimates-layer");
           map.moveLayer("epicenter-estimates-label-layer");
           map.moveLayer("grid-epicenter-estimates-layer");
@@ -1291,6 +1294,7 @@ export function MapCanvas({
   // 別のインスタンス(キャッシュ・内部状態を共有しない)。
   const gridEngineRef = useRef(null);
   const gridInternalEstRef = useRef(null);
+  const lastShakeGridModeRef = useRef(false);
   if (!gridEngineRef.current) gridEngineRef.current = new GridDetector();
   const gridEstimatorRef = useRef(null);
   if (!gridEstimatorRef.current) gridEstimatorRef.current = new EpicenterEstimator();
@@ -1575,11 +1579,22 @@ export function MapCanvas({
 
     // 揺れ検知エンジンを1tick分進める(設定でOFFの間は呼ばない)。
     // 近傍点リストが未構築(観測点マスタ未取得)の間は空配列が返る。
-    const shakeEvents = shakeDetectionEnabled
-      ? (valuesUnchanged
-        ? lastShakeEventsRef.current
-        : (lastProcessedValuesRef.current = realtimeValues, shakeEngineRef.current.processTick(realtimeValues, engineNow)))
-      : [];
+    // グリッド検知がONの間は、通常の検知エンジンは動かさず(重いため)、グリッド検知のイベントを
+    // 検知一覧・視点移動に使う(1tick前の結果。グリッド検知はこのeffectの終わりで進める)。
+    const gridModeNow = shakeDetectionEnabled && gridDetectionEnabled;
+    if (lastShakeGridModeRef.current !== gridModeNow) {
+      lastShakeGridModeRef.current = gridModeNow;
+      lastProcessedValuesRef.current = null; // 方式が切り替わったら、直前の結果を使い回さない
+      // 通常の検知に戻る時は、止めていた間の古い状態を持ち越さないよう、エンジンをリセットする。
+      if (!gridModeNow) shakeEngineRef.current.resetForSourceChange(engineNow, 0);
+    }
+    const shakeEvents = !shakeDetectionEnabled
+      ? []
+      : gridModeNow
+        ? (lastGridResultRef.current?.events ?? [])
+        : (valuesUnchanged && lastProcessedValuesRef.current === realtimeValues
+          ? lastShakeEventsRef.current
+          : (lastProcessedValuesRef.current = realtimeValues, shakeEngineRef.current.processTick(realtimeValues, engineNow)));
 
     // 揺れ検知の視点移動。確定したイベントを1つ追従し、最初の検知で、そのイベントの観測点が
     // 全部収まるよう(フローティングを除いた部分の中心に)視点を移動する。その後、イベントが
@@ -1687,7 +1702,7 @@ export function MapCanvas({
             geometry: { type: "Polygon", coordinates: [[
               [c.minLon, c.minLat], [c.maxLon, c.minLat], [c.maxLon, c.maxLat], [c.minLon, c.maxLat], [c.minLon, c.minLat],
             ]] },
-            properties: { color, fired: c.fired, hot: c.maxIntensity != null && c.maxIntensity >= 0.5 },
+            properties: { color, fired: c.fired, hot: c.maxIntensity != null && c.maxIntensity >= 0.5, sort: c.maxIntensity ?? -10 },
           });
         }
         gridSource.setData({ type: "FeatureCollection", features: cellFeatures });
