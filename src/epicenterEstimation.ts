@@ -1048,7 +1048,7 @@ function computeErrorLevel(candidate, detections, detectionWeightById, nearbyUnd
   if (nearbyUndetectedStations) {
     const firstDetectedAt = Math.min(...detections.map(d => d.detectedAt));
     const elapsedSinceFirst = now - firstDetectedAt;
-    if (elapsedSinceFirst <= UNDETECTED_CHECK_MAX_ELAPSED_MS || detections.length < UNDETECTED_CHECK_MAX_POINTS) {
+    if (nearbyUndetectedStations.noTimeLimit || elapsedSinceFirst <= UNDETECTED_CHECK_MAX_ELAPSED_MS || detections.length < UNDETECTED_CHECK_MAX_POINTS) {
       const detectedIds = new Set(detections.map(d => d.id));
       for (const s of nearbyUndetectedStations) {
         if (detectedIds.has(s.id)) continue;
@@ -1159,13 +1159,17 @@ function estimateEpicenterCore(event, allStations, now, opts) {
   }
   const estimationDetections = selectNearestDetections(detections, detectionSelectionAnchors, first);
   let nearbyUndetectedStations = null;
-  if (allStations) {
+  if (allStations || event.undetectedStations) {
     const extraRadiusKm = (effectiveSearchRadiusDeg - GRID_SEARCH_RADIUS_DEG) * 111; // 緯度1度≒111km換算
     const detectedIdsFull = new Set(detections.map(d => d.id));
-    nearbyUndetectedStations = allStations.filter(s =>
+    // グリッド検知のイベントは、「データがあり、反応していない」観測点だけを未着の根拠にする
+    // (event.undetectedStations)。欠測・別イベントの点・上昇の小さな点を除くため。その場合は、
+    // 検知初期(3秒・30点)の制限も外す(event.undetectedNoTimeLimit)。
+    nearbyUndetectedStations = (event.undetectedStations ?? allStations).filter(s =>
       !detectedIdsFull.has(s.id) &&
       haversineKm(gridCenterLat, gridCenterLon, s.lat, s.lon) <= UNDETECTED_STATION_PREFILTER_RADIUS_KM + extraRadiusKm
     );
+    if (event.undetectedNoTimeLimit) nearbyUndetectedStations.noTimeLimit = true;
   }
 
   // 【21節・22節】観測点ごとの重みを、グリッド中心(固定の基準点)からの
